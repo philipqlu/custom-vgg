@@ -224,7 +224,7 @@ def run_model(session, predict, loss_val, Xd, yd,
             plt.xlabel('minibatch number')
             plt.ylabel('minibatch loss')
 
-            plt.show(block = False)
+            plt.show(block = False) #you can delete the thing in bracket 
     return total_loss, total_correct
 
 
@@ -239,6 +239,10 @@ with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         print('Training')
         run_model(sess, y_out, mean_loss, Xd, yd, 50, 24, 50, train_step, True)
+         #print('validation')
+        #run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+        #print('test')
+        # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+        
 
 
-plt.show()
