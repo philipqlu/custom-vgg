@@ -6,22 +6,19 @@ import matplotlib.pyplot as plt
 
 import pandas as pd
 
-X = tf.placeholder(tf.float32, [None, 48, 48, 1])
+X = tf.placeholder(tf.float32, [None, 490, 640, 1])
 y = tf.placeholder(tf.int64, [None])
 is_training = tf.placeholder(tf.bool)
 
 
-
-
-def vgg(X,y):
+def vgg(X):
     # input images
     # output 7 classes of scores
 
     # conv1_1
 
     with tf.name_scope('conv1_1') as scope:
-        kernel = tf.Variable(tf.truncated_normal([3, 3, 1, 32], dtype=tf.float32,
-                                                 stddev=1e-1), name='weights')
+        kernel = tf.Variable(tf.truncated_normal(shape = [3, 3, 1, 32], dtype=tf.float32, stddev=1e-1), name='weights')
         conv = tf.nn.conv2d(X, kernel, [1, 1, 1, 1], padding='SAME')
         biases = tf.Variable(tf.constant(0.0, shape=[32], dtype=tf.float32),
                              trainable=True, name='biases')
@@ -132,34 +129,37 @@ def vgg(X,y):
     y_out = fc3l
     return y_out
 
+y_out = vgg(X)
 
+def load_data(file_name):
+    '''Loads image data from csv and returns Xd and yd 4-d arrays
+    '''
+    df = pd.read_csv(file_name)
+    num_examples, X_shape, X_depth = len(df), (490,640), 1
+    Xd = np.empty((num_examples, X_shape[0], X_shape[1], X_depth))
+    yd = np.empty((num_examples))
+    for i in range(num_examples):
+        str_list = df.pixels[i].split(' ')[0:-1]
+        pixel_flat = np.array([int(x) for x in str_list])
+        pixel_2d = np.reshape(pixel_flat, newshape=(490, 640, 1))
+        #vect = [0 for i in range(7)]
+        #vect[int(df.emotion[i])] = 1  # emotion label for example i
+        yd[i]= int(df.emotion[i])
+        Xd[i] = pixel_2d
+    # Normalize the data
+    Xd -=  np.mean(Xd, axis=0)
+    return Xd, yd
 
-y_out = vgg(X, y)
+Xd, yd = load_data('ck_image_data_sample.csv')
 
-
-total_loss = tf.losses.hinge_loss(tf.one_hot(y,7),logits=y_out)
-mean_loss = tf.reduce_mean(total_loss)
-#cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y , logits=y_out))
+# total_loss = tf.losses.hinge_loss(tf.one_hot(y,7),logits=y_out)
+# mean_loss = tf.reduce_mean(total_loss)
+cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,7) , logits=y_out))
+mean_loss = cross_entropy
+# required dependencies for batch normalization
 extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 with tf.control_dependencies(extra_update_ops):
     train_step = tf.train.AdamOptimizer(5e-4).minimize(mean_loss)
-
-df = pd.read_csv('fer2013_sample.csv')
-Xd = np.empty((24,48, 48, 1))
-yd = np.empty((24))
-for i in range(24):
-    a = [int(x) for x in df.pixels[i].split(' ')]
-    pixel_flat = np.array(a)
-    pixel_2d = np.reshape(pixel_flat, newshape=(48, 48, 1))
-    #vect = [0 for i in range(7)]
-    #vect[int(df.emotion[i])] = 1  # emotion label for example i
-    yd[i]= int(df.emotion[i])
-    Xd[i] = pixel_2d
-
-print(yd)
-
-
-
 
 def run_model(session, predict, loss_val, Xd, yd,
               epochs=1, batch_size=64, print_every=100,
@@ -212,8 +212,8 @@ def run_model(session, predict, loss_val, Xd, yd,
                 print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}" \
                       .format(iter_cnt, loss, np.sum(corr) / actual_batch_size))
             iter_cnt += 1
-        total_correct = correct / Xd.shape[0]
-        total_loss = np.sum(losses) / Xd.shape[0]
+        total_correct = float(correct / Xd.shape[0])
+        total_loss = float(np.sum(losses) / Xd.shape[0])
         print("Epoch {2}, Overall loss = {0:.3g} and accuracy of {1:.3g}" \
               .format(total_loss, total_correct, e + 1))
         if plot_losses:
@@ -224,25 +224,25 @@ def run_model(session, predict, loss_val, Xd, yd,
             plt.xlabel('minibatch number')
             plt.ylabel('minibatch loss')
 
-            plt.show(block = False) #you can delete the thing in bracket 
+            plt.show(block = False) #you can delete the thing in bracket
     return total_loss, total_correct
-
-
-
-
-
-
 
 
 with tf.Session() as sess:
     with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
         sess.run(tf.global_variables_initializer())
         print('Training')
-        run_model(sess, y_out, mean_loss, Xd, yd, 50, 24, 50, train_step, True)
+        run_model(sess,
+                  predict=y_out,
+                  loss_val = mean_loss,
+                  Xd = Xd,
+                  yd = yd,
+                  epochs = 50,
+                  batch_size=24,
+                  print_every=10,
+                  training=train_step,
+                  plot_losses=False)
          #print('validation')
         #run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
         #print('test')
         # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
-        
-
-
