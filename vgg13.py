@@ -6,15 +6,12 @@ import matplotlib.pyplot as plt
 
 import pandas as pd
 
-X = tf.placeholder(tf.float32, [None, 490, 640, 1])
+X = tf.placeholder(tf.float32, [None, 48, 48, 1])
 y = tf.placeholder(tf.int64, [None])
 is_training = tf.placeholder(tf.bool)
 
 
 def vgg(X):
-    # input images
-    # output 7 classes of scores
-
     # conv1_1
 
     with tf.name_scope('conv1_1') as scope:
@@ -98,10 +95,10 @@ def vgg(X):
 
     with tf.name_scope('fc1') as scope:
         shape = int(np.prod(pool3.get_shape()[1:]))
-        fc1w = tf.Variable(tf.truncated_normal([shape, 4096],
+        fc1w = tf.Variable(tf.truncated_normal([shape, 2048],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
-        fc1b = tf.Variable(tf.constant(1.0, shape=[4096], dtype=tf.float32),
+        fc1b = tf.Variable(tf.constant(1.0, shape=[2048], dtype=tf.float32),
                            trainable=True, name='biases')
         pool3_flat = tf.reshape(pool3, [-1, shape])
         fc1l = tf.nn.bias_add(tf.matmul(pool3_flat, fc1w), fc1b)
@@ -109,17 +106,17 @@ def vgg(X):
 
         # fc2
     with tf.name_scope('fc2') as scope:
-        fc2w = tf.Variable(tf.truncated_normal([4096, 4096],
+        fc2w = tf.Variable(tf.truncated_normal([2048, 2048],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
-        fc2b = tf.Variable(tf.constant(1.0, shape=[4096], dtype=tf.float32),
+        fc2b = tf.Variable(tf.constant(1.0, shape=[2048], dtype=tf.float32),
                            trainable=True, name='biases')
         fc2l = tf.nn.bias_add(tf.matmul(fc1, fc2w), fc2b)
         fc2 = tf.nn.relu(fc2l)
 
         # fc3
     with tf.name_scope('fc3') as scope:
-        fc3w = tf.Variable(tf.truncated_normal([4096, 7],
+        fc3w = tf.Variable(tf.truncated_normal([2048, 7],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
         fc3b = tf.Variable(tf.constant(1.0, shape=[7], dtype=tf.float32),
@@ -135,13 +132,13 @@ def load_data(file_name):
     '''Loads image data from csv and returns Xd and yd 4-d arrays
     '''
     df = pd.read_csv(file_name)
-    num_examples, X_shape, X_depth = len(df), (490,640), 1
+    num_examples, X_shape, X_depth = len(df), (48,48), 1
     Xd = np.empty((num_examples, X_shape[0], X_shape[1], X_depth))
     yd = np.empty((num_examples))
     for i in range(num_examples):
-        str_list = df.pixels[i].split(' ')[0:-1]
+        str_list = df.pixels[i].split(' ')
         pixel_flat = np.array([int(x) for x in str_list])
-        pixel_2d = np.reshape(pixel_flat, newshape=(490, 640, 1))
+        pixel_2d = np.reshape(pixel_flat, newshape=(X_shape[0], X_shape[1], 1))
         #vect = [0 for i in range(7)]
         #vect[int(df.emotion[i])] = 1  # emotion label for example i
         yd[i]= int(df.emotion[i])
@@ -150,7 +147,7 @@ def load_data(file_name):
     Xd -=  np.mean(Xd, axis=0)
     return Xd, yd
 
-Xd, yd = load_data('ck_image_data_sample.csv')
+
 
 # total_loss = tf.losses.hinge_loss(tf.one_hot(y,7),logits=y_out)
 # mean_loss = tf.reduce_mean(total_loss)
@@ -210,10 +207,10 @@ def run_model(session, predict, loss_val, Xd, yd,
             # print every now and then
             if training_now and (iter_cnt % print_every) == 0:
                 print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}" \
-                      .format(iter_cnt, loss, np.sum(corr) / actual_batch_size))
+                      .format(iter_cnt, loss, float(np.sum(corr) / actual_batch_size)))
             iter_cnt += 1
-        total_correct = float(correct / Xd.shape[0])
-        total_loss = float(np.sum(losses) / Xd.shape[0])
+        total_correct = float(correct) / float(Xd.shape[0])
+        total_loss = float(np.sum(losses)) / float(Xd.shape[0])
         print("Epoch {2}, Overall loss = {0:.3g} and accuracy of {1:.3g}" \
               .format(total_loss, total_correct, e + 1))
         if plot_losses:
@@ -227,22 +224,27 @@ def run_model(session, predict, loss_val, Xd, yd,
             plt.show(block = False) #you can delete the thing in bracket
     return total_loss, total_correct
 
+from sklearn.model_selection import KFold, cross_val_score
 
 with tf.Session() as sess:
-    with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-        sess.run(tf.global_variables_initializer())
-        print('Training')
-        run_model(sess,
-                  predict=y_out,
-                  loss_val = mean_loss,
-                  Xd = Xd,
-                  yd = yd,
-                  epochs = 50,
-                  batch_size=24,
-                  print_every=10,
-                  training=train_step,
-                  plot_losses=False)
-         #print('validation')
-        #run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
-        #print('test')
-        # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+    Xd, yd = load_data('fer2013_train.csv')
+    k_fold = KFold(n_splits=len(Xd))
+    for train_indices, test_indices in k_fold.split(Xd):
+        with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
+            sess.run(tf.global_variables_initializer())
+            print("TRAIN:", train_indices, "TEST:", test_indices)
+            print('Training')
+            run_model(sess,
+                      predict=y_out,
+                      loss_val = mean_loss,
+                      Xd = Xd[train_indices],
+                      yd = yd[train_indices],
+                      epochs = 15,
+                      batch_size=24,
+                      print_every=10,
+                      training=train_step,
+                      plot_losses=False)
+            print('Validation')
+            run_model(sess, y_out,mean_loss,Xd[test_indices],yd[test_indices],1,1) # l.o.o.c.v.
+            #print('test')
+            # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
