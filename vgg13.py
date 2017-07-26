@@ -1,15 +1,14 @@
 import tensorflow as tf
 import numpy as np
 import math
-import timeit
+import time
 import matplotlib.pyplot as plt
-
+import argparse
 import pandas as pd
+from sklearn.model_selection import KFold
+import os
 
-X = tf.placeholder(tf.float32, [None, 48, 48, 1])
-y = tf.placeholder(tf.int64, [None])
-is_training = tf.placeholder(tf.bool)
-
+ARGS = None
 
 def vgg(X):
     # conv1_1
@@ -126,7 +125,6 @@ def vgg(X):
     y_out = fc3l
     return y_out
 
-y_out = vgg(X)
 
 def load_data(file_name):
     '''Loads image data from csv and returns Xd and yd 4-d arrays
@@ -143,20 +141,10 @@ def load_data(file_name):
         #vect[int(df.emotion[i])] = 1  # emotion label for example i
         yd[i]= int(df.emotion[i])
         Xd[i] = pixel_2d
+
     # Normalize the data
-    Xd -=  np.mean(Xd, axis=0)
+    Xd =  (Xd - np.mean(Xd, axis=0)) / np.std(Xd, axis=0)
     return Xd, yd
-
-
-
-# total_loss = tf.losses.hinge_loss(tf.one_hot(y,7),logits=y_out)
-# mean_loss = tf.reduce_mean(total_loss)
-cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,7) , logits=y_out))
-mean_loss = cross_entropy
-# required dependencies for batch normalization
-extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-with tf.control_dependencies(extra_update_ops):
-    train_step = tf.train.AdamOptimizer(5e-4).minimize(mean_loss)
 
 def run_model(session, predict, loss_val, Xd, yd,
               epochs=1, batch_size=64, print_every=100,
@@ -179,7 +167,12 @@ def run_model(session, predict, loss_val, Xd, yd,
 
     # counter
     iter_cnt = 0
+
+    # start timing
+    start_time = time.time()
+
     for e in range(epochs):
+
         # keep track of losses and accuracy
         correct = 0
         losses = []
@@ -187,14 +180,14 @@ def run_model(session, predict, loss_val, Xd, yd,
         for i in range(int(math.ceil(Xd.shape[0] / batch_size))):
             # generate indicies for the batch
             start_idx = (i * batch_size) % Xd.shape[0]
-            idx = train_indicies[start_idx:start_idx + batch_size]
+            indices = train_indicies[start_idx:start_idx + batch_size]
 
             # create a feed dictionary for this batch
-            feed_dict = {X: Xd[idx, :],
-                         y: yd[idx],
+            feed_dict = {X: Xd[indices, :],
+                         y: yd[indices],
                          is_training: training_now}
             # get batch size
-            actual_batch_size = yd[idx].shape[0]
+            actual_batch_size = yd[indices].shape[0]
 
             # have tensorflow compute loss and correct predictions
             # and (if given) perform a training step
@@ -209,7 +202,7 @@ def run_model(session, predict, loss_val, Xd, yd,
                 print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}" \
                       .format(iter_cnt, loss, float(np.sum(corr) / actual_batch_size)))
             iter_cnt += 1
-        total_correct = float(correct) / float(Xd.shape[0])
+        total_correct = float(correct / Xd.shape[0])
         total_loss = float(np.sum(losses)) / float(Xd.shape[0])
         print("Epoch {2}, Overall loss = {0:.3g} and accuracy of {1:.3g}" \
               .format(total_loss, total_correct, e + 1))
@@ -222,29 +215,65 @@ def run_model(session, predict, loss_val, Xd, yd,
             plt.ylabel('minibatch loss')
 
             plt.show(block = False) #you can delete the thing in bracket
+
+    end_time = time.time()
+    print 'train time: {:.3f}'.format(start_time-end_time)
+
     return total_loss, total_correct
 
-from sklearn.model_selection import KFold, cross_val_score
 
-with tf.Session() as sess:
-    Xd, yd = load_data('fer2013_train.csv')
-    k_fold = KFold(n_splits=len(Xd))
-    for train_indices, test_indices in k_fold.split(Xd):
-        with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-            sess.run(tf.global_variables_initializer())
-            print("TRAIN:", train_indices, "TEST:", test_indices)
-            print('Training')
-            run_model(sess,
-                      predict=y_out,
-                      loss_val = mean_loss,
-                      Xd = Xd[train_indices],
-                      yd = yd[train_indices],
-                      epochs = 15,
-                      batch_size=24,
-                      print_every=10,
-                      training=train_step,
-                      plot_losses=False)
-            print('Validation')
-            run_model(sess, y_out,mean_loss,Xd[test_indices],yd[test_indices],1,1) # l.o.o.c.v.
-            #print('test')
-            # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+def main(_):
+    # Import data
+    Xd, yd = load_data(os.path.join(ARGS.data_dir, R'train.csv'))
+
+    # Create Model
+    X = tf.placeholder(tf.float32, [None, Xd.shape[1], yd.shape[1], 1])
+    y = tf.placeholder(tf.int64, [None])
+    is_training = tf.placeholder(tf.bool)
+
+    # Get output and loss
+    y_out = vgg(X)
+    mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,7) , logits=y_out))
+
+    # required dependencies for batch normalization
+    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    with tf.control_dependencies(extra_update_ops):
+        train_step = tf.train.AdamOptimizer(5e-4).minimize(mean_loss)
+
+    # save model
+    saver = tf.train.Saver()
+
+    with tf.Session() as sess:
+        k_fold = KFold(n_splits=len(Xd))
+        for train_indices, test_indices in k_fold.split(Xd):
+            with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
+                sess.run(tf.global_variables_initializer())
+                print("TRAIN:", train_indices, "TEST:", test_indices)
+                print('Training')
+                run_model(sess,
+                          predict=y_out,
+                          loss_val = mean_loss,
+                          Xd = Xd[train_indices],
+                          yd = yd[train_indices],
+                          epochs = 15,
+                          batch_size=24,
+                          print_every=10,
+                          training=train_step,
+                          plot_losses=False)
+                save_path = saver.save(sess, os.path.join(ARGS.data_dir,ARGS.model_name))
+                print("Model saved in file: %s" % save_path)
+                print('Validation')
+                run_model(sess, y_out, mean_loss, Xd[test_indices], yd[test_indices], epochs = 1, batch_size = 1) # l.o.o.c.v.
+                #print('test')
+                # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str,
+                      default='/tmp/data',
+                      help='Directory for storing input data')
+    parser.add_argument('--model_name', type=str,
+                          default='model',
+                          help='Where and what to save as the model name')
+    ARGS = parser.parse_args()
+    tf.app.run(main=main)
