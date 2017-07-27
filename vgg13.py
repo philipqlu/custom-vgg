@@ -7,10 +7,57 @@ import argparse
 import pandas as pd
 from sklearn.model_selection import KFold
 import os
+import sys
 
-ARGS = None
+FLAGS = None
 
-def vgg(X):
+# 0=neutral, 1=anger, 2=disgust, 3=fear, 4=happy, 5=sadness, 6=surprise
+labels = ['Happiness', 'Fear', 'Surprise', 'Disgust', 'Anger', 'Sadness']
+label_dict = {1:'Anger', 2:'Disgust', 3:'Fear', 4:'Happiness', 5:'Sadness', 6:'Surprise'}
+
+def process_target(y, y_c, alpha=0.1, mode=None):
+    '''
+      y: the ground truth targets for a minibatch
+      y_c: the normalized label frequency vector for the minibatch
+      mode: a string, either None or "disturb" or "soft_label"
+      alpha: noise rate
+    '''
+    if mode == 'disturb':
+        new_targ_idx = np.random.choice(p = y_c)
+        return tf.one_hot(new_targ_idx,7)
+    elif mode == 'soft_label':
+        y_new = (y + alpha * y_c)/(1 + alpha)
+        return y_new
+    return y
+
+# New Code
+class Vgg13:
+    '''
+    Trainable custom vgg model.
+    '''
+    def __init__(self, model_save_path=None, train=True, drop_prob=0.5):
+        if model_save_path is not None:
+            self.data_dict = np.load(model_save_path, encoding='latin1').item()
+        else:
+            self.data_dict = None
+        self.var_dict = {}
+
+    def build(self):
+        pass
+
+    def conv2d(x, W):
+      return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
+
+    def max_pool_2x2(x):
+      return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
+                            strides=[1, 2, 2, 1], padding='SAME')
+
+# Old Code
+def vgg(X, dropout = None):
+    '''
+      X: float32 tensor containing the training examples
+      dropout: bool tensor, if set True then we include dropout layer
+    '''
     # conv1_1
 
     with tf.name_scope('conv1_1') as scope:
@@ -90,14 +137,17 @@ def vgg(X):
         # pool3
     pool3 = tf.nn.max_pool(conv3_3, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool3')
 
+    # if dropout is not None:
 
 
+
+        # fc1
     with tf.name_scope('fc1') as scope:
         shape = int(np.prod(pool3.get_shape()[1:]))
-        fc1w = tf.Variable(tf.truncated_normal([shape, 2048],
+        fc1w = tf.Variable(tf.truncated_normal([shape, 1024],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
-        fc1b = tf.Variable(tf.constant(1.0, shape=[2048], dtype=tf.float32),
+        fc1b = tf.Variable(tf.constant(1.0, shape=[1024], dtype=tf.float32),
                            trainable=True, name='biases')
         pool3_flat = tf.reshape(pool3, [-1, shape])
         fc1l = tf.nn.bias_add(tf.matmul(pool3_flat, fc1w), fc1b)
@@ -105,20 +155,20 @@ def vgg(X):
 
         # fc2
     with tf.name_scope('fc2') as scope:
-        fc2w = tf.Variable(tf.truncated_normal([2048, 2048],
+        fc2w = tf.Variable(tf.truncated_normal([1024, 1024],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
-        fc2b = tf.Variable(tf.constant(1.0, shape=[2048], dtype=tf.float32),
+        fc2b = tf.Variable(tf.constant(1.0, shape=[1024], dtype=tf.float32),
                            trainable=True, name='biases')
         fc2l = tf.nn.bias_add(tf.matmul(fc1, fc2w), fc2b)
         fc2 = tf.nn.relu(fc2l)
 
         # fc3
     with tf.name_scope('fc3') as scope:
-        fc3w = tf.Variable(tf.truncated_normal([2048, 7],
+        fc3w = tf.Variable(tf.truncated_normal([1024, 6],
                                                dtype=tf.float32,
                                                stddev=1e-1), name='weights')
-        fc3b = tf.Variable(tf.constant(1.0, shape=[7], dtype=tf.float32),
+        fc3b = tf.Variable(tf.constant(1.0, shape=[6], dtype=tf.float32),
                            trainable=True, name='biases')
         fc3l = tf.nn.bias_add(tf.matmul(fc2, fc3w), fc3b)
 
@@ -127,10 +177,11 @@ def vgg(X):
 
 
 def load_data(file_name):
-    '''Loads image data from csv and returns Xd and yd 4-d arrays
+    '''
+    Loads image data from csv and returns Xd and yd 4-d arrays
     '''
     df = pd.read_csv(file_name)
-    num_examples, X_shape, X_depth = len(df), (48,48), 1
+    num_examples, X_shape, X_depth = len(df), (490,640), 1
     Xd = np.empty((num_examples, X_shape[0], X_shape[1], X_depth))
     yd = np.empty((num_examples))
     for i in range(num_examples):
@@ -143,12 +194,26 @@ def load_data(file_name):
         Xd[i] = pixel_2d
 
     # Normalize the data
-    Xd =  (Xd - np.mean(Xd, axis=0)) / np.std(Xd, axis=0)
+    Xd =  (Xd - np.mean(Xd, keepdims=True)) / np.std(Xd, keepdims=True)
     return Xd, yd
 
-def run_model(session, predict, loss_val, Xd, yd,
+def load_crowd_labels(file_name):
+    '''
+    Loads crowd targets from csv and returns 2D np array
+    '''
+    df = pd.read_csv(file_name)
+    num_examples, num_classes = len(df), len(df.iloc[0,1:])
+    print num_examples, num_classes
+    yc = np.empty((30, 6), dtype=float)
+    for i in range(30):
+        yc[i] = np.array(df.iloc[i,1:])
+    print "crowd labels loaded"
+    return yc
+
+
+def run_model(session, predict, loss_val, Xd, yd, yc=None,
               epochs=1, batch_size=64, print_every=100,
-              training=None, plot_losses=False):
+              training=None, train_mode=None, alpha=0.1, plot_losses=False):
     # have tensorflow compute accuracy
     correct_prediction = tf.equal(tf.argmax(predict, 1),y)
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
@@ -182,12 +247,21 @@ def run_model(session, predict, loss_val, Xd, yd,
             start_idx = (i * batch_size) % Xd.shape[0]
             indices = train_indicies[start_idx:start_idx + batch_size]
 
+            # current mini batch
+            X_mini, y_mini = Xd[indices, :], yd[indices]
+            actual_batch_size = y_mini.shape[0]
+
+            if yc is not None:
+                yc_mini = yc[indices]
+
+            # process new targets
+            for idx in actual_batch_size:
+                y_mini[idx] = process_target(y_mini, yc_mini, alpha, train_mode)
+
             # create a feed dictionary for this batch
-            feed_dict = {X: Xd[indices, :],
-                         y: yd[indices],
+            feed_dict = {X: X_mini,
+                         y: y_mini,
                          is_training: training_now}
-            # get batch size
-            actual_batch_size = yd[indices].shape[0]
 
             # have tensorflow compute loss and correct predictions
             # and (if given) perform a training step
@@ -224,16 +298,19 @@ def run_model(session, predict, loss_val, Xd, yd,
 
 def main(_):
     # Import data
-    Xd, yd = load_data(os.path.join(ARGS.data_dir, R'train.csv'))
+    print FLAGS.data_dir
+    Xd, yd = load_data(os.path.join(FLAGS.data_dir, 'train.csv'))
+    yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
 
     # Create Model
-    X = tf.placeholder(tf.float32, [None, Xd.shape[1], yd.shape[1], 1])
+    print Xd.shape
+    X = tf.placeholder(tf.float32, [None, Xd.shape[1], Xd.shape[2], 1])
     y = tf.placeholder(tf.int64, [None])
     is_training = tf.placeholder(tf.bool)
 
     # Get output and loss
     y_out = vgg(X)
-    mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,7) , logits=y_out))
+    mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,6) , logits=y_out))
 
     # required dependencies for batch normalization
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -255,12 +332,15 @@ def main(_):
                           loss_val = mean_loss,
                           Xd = Xd[train_indices],
                           yd = yd[train_indices],
+                          yc = yc[train_indices],
                           epochs = 15,
                           batch_size=24,
                           print_every=10,
                           training=train_step,
+                          train_mode=None,
+                          alpha=0.1,
                           plot_losses=False)
-                save_path = saver.save(sess, os.path.join(ARGS.data_dir,ARGS.model_name))
+                save_path = saver.save(sess, os.path.join(FLAGS.data_dir,FLAGS.model_name))
                 print("Model saved in file: %s" % save_path)
                 print('Validation')
                 run_model(sess, y_out, mean_loss, Xd[test_indices], yd[test_indices], epochs = 1, batch_size = 1) # l.o.o.c.v.
@@ -270,10 +350,10 @@ def main(_):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str,
-                      default='/tmp/data',
+                      default='tmp/data/',
                       help='Directory for storing input data')
     parser.add_argument('--model_name', type=str,
                           default='model',
                           help='Where and what to save as the model name')
-    ARGS = parser.parse_args()
+    FLAGS = parser.parse_args()
     tf.app.run(main=main)
