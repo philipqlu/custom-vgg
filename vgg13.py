@@ -4,11 +4,10 @@ import math
 import time
 import matplotlib.pyplot as plt
 import argparse
-import pandas as pd
 from sklearn.model_selection import KFold
 import os
 import sys
-
+# from data_utils import *
 FLAGS = None
 
 # 0=neutral, 1=anger, 2=disgust, 3=fear, 4=happy, 5=sadness, 6=surprise
@@ -52,7 +51,27 @@ class Vgg13:
       return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
                             strides=[1, 2, 2, 1], padding='SAME')
 
+
+def conv2d(x, W):
+  return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
+
+def max_pool_2x2(x):
+  return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
+                        strides=[1, 2, 2, 1], padding='SAME')
+
+def weight_variable(shape):
+  """weight_variable generates a weight variable of a given shape."""
+  initial = tf.truncated_normal(shape, stddev=0.1)
+  return tf.Variable(initial)
+
+
+def bias_variable(shape):
+  """bias_variable generates a bias variable of a given shape."""
+  initial = tf.constant(0.1, shape=shape)
+  return tf.Variable(initial)
+
 # Old Code
+
 def vgg(X, dropout = None):
     '''
       X: float32 tensor containing the training examples
@@ -62,7 +81,7 @@ def vgg(X, dropout = None):
 
     with tf.name_scope('conv1_1') as scope:
         kernel = tf.Variable(tf.truncated_normal(shape = [3, 3, 1, 32], dtype=tf.float32, stddev=1e-1), name='weights')
-        conv = tf.nn.conv2d(X, kernel, [1, 1, 1, 1], padding='SAME')
+        conv = conv2d(X, kernel)
         biases = tf.Variable(tf.constant(0.0, shape=[32], dtype=tf.float32),
                              trainable=True, name='biases')
         out = tf.nn.bias_add(conv, biases)
@@ -72,7 +91,7 @@ def vgg(X, dropout = None):
     with tf.name_scope('conv1_2') as scope:
         kernel = tf.Variable(tf.truncated_normal([3, 3, 32, 32], dtype=tf.float32,
                                                  stddev=1e-1), name='weights')
-        conv = tf.nn.conv2d(conv1_1, kernel, [1, 1, 1, 1], padding='SAME')
+        conv = conv2d(conv1_1, kernel)
         biases = tf.Variable(tf.constant(0.0, shape=[32], dtype=tf.float32),
                              trainable=True, name='biases')
         out = tf.nn.bias_add(conv, biases)
@@ -138,8 +157,6 @@ def vgg(X, dropout = None):
     pool3 = tf.nn.max_pool(conv3_3, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool3')
 
     # if dropout is not None:
-
-
 
         # fc1
     with tf.name_scope('fc1') as scope:
@@ -210,7 +227,7 @@ def load_crowd_labels(file_name):
     print "crowd labels loaded"
     return yc
 
-
+# TODO: Clean this mess
 def run_model(session, predict, loss_val, Xd, yd, yc=None,
               epochs=1, batch_size=64, print_every=100,
               training=None, train_mode=None, alpha=0.1, plot_losses=False):
@@ -296,9 +313,11 @@ def run_model(session, predict, loss_val, Xd, yd, yc=None,
     return total_loss, total_correct
 
 
+
 def main(_):
     # Import data
     print FLAGS.data_dir
+    # train_reader = DataReader(data_dir = FLAGS.data_dir)
     Xd, yd = load_data(os.path.join(FLAGS.data_dir, 'train.csv'))
     yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
 
@@ -310,7 +329,9 @@ def main(_):
 
     # Get output and loss
     y_out = vgg(X)
-    mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.one_hot(y,6) , logits=y_out))
+    mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
+                                labels=tf.one_hot(y,6),
+                                logits=y_out))
 
     # required dependencies for batch normalization
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -351,9 +372,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str,
                       default='tmp/data/',
-                      help='Directory for storing input data')
+                      help='Directory for storing all training data')
     parser.add_argument('--model_name', type=str,
                           default='model',
-                          help='Where and what to save as the model name')
+                          help='What to save as the model name')
     FLAGS = parser.parse_args()
     tf.app.run(main=main)
