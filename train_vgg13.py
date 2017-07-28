@@ -2,7 +2,7 @@ from __future__ import division
 import tensorflow as tf
 import math
 import time
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import argparse
 from sklearn.model_selection import KFold
 import pandas as pd
@@ -13,7 +13,7 @@ import numpy as np
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_32_24.csv'
+data_file_name = 'ck_data_128_98.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -42,7 +42,7 @@ def one_hot(idx, depth):
     vect[idx] = 1
     return vect
 
-def load_data(file_name, shape=(int(128/4),int(98/4))):
+def load_data(file_name, shape=(int(128),int(98))):
     '''
     Loads images and targets from csv and normalizes images.
     '''
@@ -187,8 +187,8 @@ def vgg(X):
         # fc1
     with tf.name_scope('fc1') as scope:
         shape = int(np.prod(pool3.get_shape()[1:]))
-        fc1w = weight_variable([shape, 1024])
-        fc1b = bias_variable([1024])
+        fc1w = weight_variable([shape, 512])
+        fc1b = bias_variable([512])
         pool3_flat = tf.reshape(pool3, [-1, shape])
         fc1l = tf.nn.bias_add(tf.matmul(pool3_flat, fc1w), fc1b)
         fc1 = tf.nn.relu(fc1l)
@@ -200,14 +200,14 @@ def vgg(X):
 
         # fc2
     with tf.name_scope('fc2') as scope:
-        fc2w = weight_variable([1024, 1024])
-        fc2b = bias_variable([1024])
+        fc2w = weight_variable([512, 512])
+        fc2b = bias_variable([512])
         fc2l = tf.nn.bias_add(tf.matmul(fc1_drop, fc2w), fc2b)
         fc2 = tf.nn.relu(fc2l)
 
         # fc3
     with tf.name_scope('fc3') as scope:
-        fc3w = weight_variable([1024, 6])
+        fc3w = weight_variable([512, 6])
         fc3b = bias_variable([6])
         y_out = tf.nn.bias_add(tf.matmul(fc2, fc3w), fc3b)
     return y_out, keep_prob
@@ -227,6 +227,7 @@ def main(_):
         yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
 
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
+    print '===\n' * 3
 
     # Create model
     X = tf.placeholder(tf.float32, [None, Xd.shape[1], Xd.shape[2], 1])
@@ -249,7 +250,12 @@ def main(_):
     with tf.control_dependencies(extra_update_ops):
         train_step = tf.train.AdamOptimizer(4e-4).minimize(mean_loss)
 
-    # prepare datasets
+    # run parameters
+    epochs = 30
+    batch_size = 64
+    noise_rate = 0.1
+
+    # shuffle indices
     data_indices = np.arange(data_size)
     np.random.shuffle(data_indices)
     Xd = Xd[data_indices]
@@ -257,83 +263,115 @@ def main(_):
     if is_crowd_train:
         yc = yc[data_indices]
 
-    # training and testing sets
-    slice_idx = int(math.ceil(data_size*0.8))
-    X_train = Xd[0:slice_idx]
-    y_train = yd[0:slice_idx]
-    X_test = Xd[slice_idx:]
-    y_test = yd[slice_idx:]
 
-    # preprocess
-    X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
-    X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+    # # training and testing sets for fixed split
+    # slice_idx = int(math.ceil(data_size*0.7))
+    # X_train = Xd[0:slice_idx]
+    # y_train = yd[0:slice_idx]
+    # X_test = Xd[slice_idx:]
+    # y_test = yd[slice_idx:]
+    # if is_crowd_train:
+    #     yc = yc[data_indices]
+    #     yc = yc[:slice_idx]
+    #     if train_mode=='soft':
+    #         y_train = process_target(y_train, y_c, noise_rate, 'soft')
+    #
+    # # preprocess
+    # X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+    # X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
 
     # save model
     saver = tf.train.Saver()
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-            sess.run(tf.global_variables_initializer())
-            # k_fold = KFold(n_splits=len(Xd))
-            # for train_indices, test_indices in k_fold.split(Xd):
-            print('Training')
+            splits = len(Xd) - 9
+            print 'splits:', len(Xd) - 20
+            k_fold = KFold(n_splits=splits)
+            fold = 0
+            total_val_acc = 0
+            for train_indices, test_indices in k_fold.split(Xd):
+                # We're retraining our model each time now. It's comp expensive
+                # but only way with such a small dataset.
+                sess.run(tf.global_variables_initializer())
+                fold += 1
 
-            # track some stats
-            iter_cnt = 0
-            losses = {'train':[],'test':[]}
+                # training and val splits
+                X_train = Xd[train_indices]
+                y_train = yd[train_indices]
+                X_test = Xd[test_indices]
+                y_test = yd[test_indices]
 
-            # start timing
-            start_time = time.time()
+                if is_crowd_train:
+                    yc_train = yc[train_indices]
+                    if train_mode=='soft':
+                        y_train = process_target(y_train, y_c, noise_rate, 'soft')
 
-            # run parameters
-            epochs = 30
-            batch_size = 32
-            noise_rate = 0.1
+                # preprocess
+                X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+                X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
 
-            train_indices = np.arange(slice_idx)
-            for e in range(epochs):
-                for i in range(int(math.ceil(X_train.shape[0] / batch_size))):
-                    start_idx = (i * batch_size) % X_train.shape[0]
-                    indices = train_indices[start_idx:start_idx + batch_size]
-                    # current mini batch
-                    X_mini, y_mini = X_train[indices, :], y_train[indices]
-                    actual_batch_size = y_mini.shape[0]
+                print('Training')
 
-                    # process new targets
-                    if is_crowd_train:
-                        yc_mini = yc[indices]
-                        y_mini = process_target(y_mini, yc_mini, noise_rate, train_mode)
+                # track some stats
+                iter_cnt = 0
+                losses = {'train':[],'test':[]}
+                best_epoch = 0
+                max_val_acc = 0
 
-                    train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.8})
-                    iter_cnt += 1
+                # start timing
+                start_time = time.time()
 
-                # compute the losses
-                train_loss, train_acc = sess.run([mean_loss, accuracy],
-                            feed_dict={X:X_mini, y:y_mini, keep_prob:1.0})
-                test_loss, test_acc = sess.run([mean_loss, accuracy],
-                            feed_dict={X:X_test, y:y_test, keep_prob:1.0})
+                train_indices = np.arange(len(X_train))
+                for e in range(epochs):
+                    for i in range(int(math.ceil(X_train.shape[0] / batch_size))):
+                        start_idx = (i * batch_size) % X_train.shape[0]
+                        indices = train_indices[start_idx:start_idx + batch_size]
+                        # current mini batch
+                        X_mini, y_mini = X_train[indices, :], y_train[indices]
+                        actual_batch_size = y_mini.shape[0]
 
-                losses['train'].append(1-train_acc)
-                losses['test'].append(1-test_acc)
-                print("Epoch {0}, Train loss = {1:.5g}, train accuracy = {2:.5f}, Test loss = {3: .5g}, Test Accuracy = {4:.5f}" \
-                      .format(e+1, train_loss, train_acc, test_loss, test_acc))
+                        # process new targets
+                        if is_crowd_train:
+                            yc_mini = yc[indices]
+                            if train_mode=='disturb':
+                                y_mini = process_target(y_mini, yc_mini, noise_rate, train_mode)
 
-            end_time = time.time()
-            print 'train time: {:.3f}'.format(start_time-end_time)
+                        train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.8})
+                        iter_cnt += 1
+
+                    # compute the losses
+                    train_loss, train_acc = sess.run([mean_loss, accuracy],
+                                feed_dict={X:X_mini, y:y_mini, keep_prob:1.0})
+                    test_loss, test_acc = sess.run([mean_loss, accuracy],
+                                feed_dict={X:X_test, y:y_test, keep_prob:1.0})
+
+                    losses['train'].append(1-train_acc)
+                    losses['test'].append(1-test_acc)
+                    if max_val_acc < test_acc:
+                        max_val_acc = test_acc
+                        best_epoch = e
+                    print("Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
+                          .format(e, train_loss, train_acc, test_loss, test_acc, fold))
+                print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
+                total_val_acc += max_val_acc
+                end_time = time.time()
+            print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,total_val_acc / (fold))
+            print 'Train time: {:.3f}'.format(end_time-start_time)
 
             save_path = saver.save(sess, os.path.join(output_dir,FLAGS.model_name))
             print("Model saved in file: %s" % save_path)
-            print('Test')
+            # print('Test')
 
-            plt.figure(1)
-            plt.grid(True)
-            plt.title('Loss')
-            plt.xlabel('Epoch number')
-            plt.ylabel('Recognition Error Rate')
-            for key, value in losses.items():
-                plt.plot(value, label=key)
-            plt.legend()
-            plt.show()
+            #plt.figure(1)
+            #plt.grid(True)
+            #plt.title('Loss')
+            #plt.xlabel('Epoch number')
+            #plt.ylabel('Recognition Error Rate')
+            #for key, value in losses.items():
+            #    plt.plot(value, label=key)
+            #plt.legend()
+            #plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
