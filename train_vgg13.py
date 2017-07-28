@@ -2,7 +2,7 @@ from __future__ import division
 import tensorflow as tf
 import math
 import time
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import argparse
 from sklearn.model_selection import KFold
 import pandas as pd
@@ -363,15 +363,15 @@ def main(_):
             print("Model saved in file: %s" % save_path)
             # print('Test')
 
-            #plt.figure(1)
-            #plt.grid(True)
-            #plt.title('Loss')
-            #plt.xlabel('Epoch number')
-            #plt.ylabel('Recognition Error Rate')
-            #for key, value in losses.items():
-            #    plt.plot(value, label=key)
-            #plt.legend()
-            #plt.show()
+            plt.figure(1)
+            plt.grid(True)
+            plt.title('Loss')
+            plt.xlabel('Epoch number')
+            plt.ylabel('Recognition Error Rate')
+            for key, value in losses.items():
+                plt.plot(value, label=key)
+            plt.legend()
+            plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
