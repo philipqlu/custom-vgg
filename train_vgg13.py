@@ -9,11 +9,12 @@ import pandas as pd
 import os
 import sys
 import numpy as np
+from vgg13_model import vgg
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_128_98.csv'
+data_file_name = 'ck_data_32_24.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -23,16 +24,7 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 
 NOISES = [0, 0.05, 0.1, 0.2, 0.5, 0.8]
-
-def preprocess_stats(X, length, normalize=True):
-    '''
-    Returns the mean and stdev of a target X in the desired length.
-    '''
-    if normalize:
-        newX = (X - np.mean(X, axis=(1,2,3), keepdims=True)) / np.std(X, axis=(1,2,3), keepdims=True)
-    else:
-        newX = X - np.mean(X, axis=(1,2,3), keepdims=True)
-    return newX
+noise_rate = 0.1
 
 def one_hot(idx, depth):
     '''
@@ -42,7 +34,7 @@ def one_hot(idx, depth):
     vect[idx] = 1
     return vect
 
-def load_data(file_name, shape=(int(128),int(98))):
+def load_data(file_name, shape=(int(128/4),int(98/4))):
     '''
     Loads images and targets from csv and normalizes images.
     '''
@@ -84,133 +76,15 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
     classes = y.shape[1]
     if mode == 'disturb':
         for i in range(len(y_n)):
-            new_targ_idx = int(np.random.choice(a=np.ones(classes), p=y_n[i]))
-            #print new_targ_idx
+            new_targ_idx = int(np.random.choice(a=classes, p=y_n[i]))
             y_n[i] = one_hot(new_targ_idx,classes)
     elif mode == 'soft':
         y_n = (y + alpha * y_n)/(1 + alpha)
+    elif mode == 'disturb_uniform':
+        for i in range(len(y)):
+            new_targ_idx = int(np.random.choice(a=classes))
+            y_n[i] = one_hot(new_targ_idx,classes)
     return y_n
-
-def conv2d(x, W):
-    '''Generates convolutional layer according to vgg.'''
-    return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
-
-def max_pool_2x2(x, name=None):
-    '''Generates max pooling layer with fixed 2x2 kernel'''
-    return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
-                        strides=[1, 2, 2, 1], padding='SAME', name=name)
-
-def weight_variable(shape):
-    '''Generates a weight variable of a given shape.'''
-    initial = tf.truncated_normal(shape, dtype=tf.float32, stddev=0.1)
-    return tf.Variable(initial, name='weights')
-
-def bias_variable(shape):
-    '''Generates a bias variable of a given shape.'''
-    initial = tf.constant(0.0, shape=shape)
-    return tf.Variable(initial, name='biases')
-
-def vgg(X):
-    '''
-      Custom with dropout and less units in FC layers.
-      X: float32 tensor containing the training examples
-      Returns:
-      y_out: output layer
-      keep_prob: tensorflow float, default 1.0 means no drop
-    '''
-    # conv1_1
-
-    with tf.name_scope('conv1_1') as scope:
-        kernel = weight_variable(shape=[3, 3, 1, 32])
-        conv = conv2d(X, kernel)
-        biases = bias_variable([32])
-        out = tf.nn.bias_add(conv, biases)
-        conv1_1 = tf.nn.relu(out, name=scope)
-
-    # conv1_2
-    with tf.name_scope('conv1_2') as scope:
-        kernel = weight_variable([3, 3, 32, 32])
-        conv = conv2d(conv1_1, kernel)
-        biases = bias_variable([32])
-        out = tf.nn.bias_add(conv, biases)
-        conv1_2 = tf.nn.relu(out, name=scope)
-
-    # pool1
-    pool1 = max_pool_2x2(conv1_2, name='pool1')
-
-    # conv2_1
-    with tf.name_scope('conv2_1') as scope:
-        kernel = weight_variable([3, 3, 32, 64])
-        conv = conv2d(pool1, kernel)
-        biases = weight_variable([64])
-        out = tf.nn.bias_add(conv, biases)
-        conv2_1 = tf.nn.relu(out, name=scope)
-
-        # conv2_2
-    with tf.name_scope('conv2_2') as scope:
-        kernel = weight_variable([3, 3, 64, 64])
-        conv = conv2d(conv2_1, kernel)
-        biases = bias_variable([64])
-        out = tf.nn.bias_add(conv, biases)
-        conv2_2 = tf.nn.relu(out, name=scope)
-
-        # pool2
-    pool2 = max_pool_2x2(conv2_2, name='pool2')
-
-    # conv3_1
-    with tf.name_scope('conv3_1') as scope:
-        kernel = weight_variable([3, 3, 64, 128])
-        conv = conv2d(pool2, kernel)
-        biases = bias_variable([128])
-        out = tf.nn.bias_add(conv, biases)
-        conv3_1 = tf.nn.relu(out, name=scope)
-
-        # conv3_2
-    with tf.name_scope('conv3_2') as scope:
-        kernel = weight_variable([3, 3, 128, 128])
-        conv = conv2d(conv3_1, kernel)
-        biases = bias_variable([128])
-        out = tf.nn.bias_add(conv, biases)
-        conv3_2 = tf.nn.relu(out, name=scope)
-
-        # conv3_3
-    with tf.name_scope('conv3_3') as scope:
-        kernel = weight_variable([3, 3, 128, 128])
-        conv = conv2d(conv3_2, kernel)
-        biases = bias_variable([128])
-        out = tf.nn.bias_add(conv, biases)
-        conv3_3 = tf.nn.relu(out, name=scope)
-
-        # pool3
-    pool3 = max_pool_2x2(conv3_3, name='pool3')
-
-        # fc1
-    with tf.name_scope('fc1') as scope:
-        shape = int(np.prod(pool3.get_shape()[1:]))
-        fc1w = weight_variable([shape, 512])
-        fc1b = bias_variable([512])
-        pool3_flat = tf.reshape(pool3, [-1, shape])
-        fc1l = tf.nn.bias_add(tf.matmul(pool3_flat, fc1w), fc1b)
-        fc1 = tf.nn.relu(fc1l)
-
-        # dropout layer after first fully connected
-    with tf.name_scope('dropout'):
-        keep_prob = tf.placeholder(tf.float32)
-        fc1_drop = tf.nn.dropout(fc1, keep_prob)
-
-        # fc2
-    with tf.name_scope('fc2') as scope:
-        fc2w = weight_variable([512, 512])
-        fc2b = bias_variable([512])
-        fc2l = tf.nn.bias_add(tf.matmul(fc1_drop, fc2w), fc2b)
-        fc2 = tf.nn.relu(fc2l)
-
-        # fc3
-    with tf.name_scope('fc3') as scope:
-        fc3w = weight_variable([512, 6])
-        fc3b = bias_variable([6])
-        y_out = tf.nn.bias_add(tf.matmul(fc2, fc3w), fc3b)
-    return y_out, keep_prob
 
 def main(_):
     print FLAGS.data_dir
@@ -253,7 +127,7 @@ def main(_):
     # run parameters
     epochs = 30
     batch_size = 64
-    noise_rate = 0.1
+
 
     # shuffle indices
     data_indices = np.arange(data_size)
@@ -263,8 +137,6 @@ def main(_):
     if is_crowd_train:
         yc = yc[data_indices]
 
-
-    # # training and testing sets for fixed split
     # slice_idx = int(math.ceil(data_size*0.7))
     # X_train = Xd[0:slice_idx]
     # y_train = yd[0:slice_idx]
@@ -285,8 +157,8 @@ def main(_):
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-            splits = len(Xd) - 9
-            print 'splits:', len(Xd) - 20
+            splits = 10
+            print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
             total_val_acc = 0
@@ -312,7 +184,6 @@ def main(_):
                 X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
 
                 print('Training')
-
                 # track some stats
                 iter_cnt = 0
                 losses = {'train':[],'test':[]}
@@ -331,11 +202,11 @@ def main(_):
                         X_mini, y_mini = X_train[indices, :], y_train[indices]
                         actual_batch_size = y_mini.shape[0]
 
-                        # process new targets
-                        if is_crowd_train:
-                            yc_mini = yc[indices]
-                            if train_mode=='disturb':
-                                y_mini = process_target(y_mini, yc_mini, noise_rate, train_mode)
+                        # process new targets for the batch
+                        if train_mode == 'disturb':
+                            y_mini = process_target(y_mini, yc[indices], noise_rate, train_mode)
+                        elif train_mode == 'disturb_uniform':
+                            y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
 
                         train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.8})
                         iter_cnt += 1
