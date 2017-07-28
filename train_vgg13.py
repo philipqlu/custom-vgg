@@ -4,27 +4,43 @@ import math
 import time
 import matplotlib.pyplot as plt
 import argparse
-# from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold
 import pandas as pd
 import os
 import sys
 import numpy as np
 
+tf.logging.set_verbosity(tf.logging.INFO)
+
 FLAGS = None
+data_file_name = 'ck_data_32_24.csv'
+output_dir = 'tmp/models'
+expression_table = {'Anger'    : 0,
+                    'Disgust'  : 1,
+                    'Fear'     : 2,
+                    'Happiness': 3,
+                    'Sadness'  : 4,
+                    'Surprise' : 5}
 
-# 0=neutral, 1=anger, 2=disgust, 3=fear, 4=happy, 5=sadness, 6=surprise
-labels = ['Happiness', 'Fear', 'Surprise', 'Disgust', 'Anger', 'Sadness']
-label_dict = {1:'Anger', 2:'Disgust', 3:'Fear', 4:'Happiness', 5:'Sadness', 6:'Surprise'}
+NOISES = [0, 0.05, 0.1, 0.2, 0.5, 0.8]
 
-def preprocess_images(X, normalize=False):
+def preprocess_stats(X, length, normalize=True):
     '''
-    Simple normalization or mean subtraction. Note only do this on training set.
+    Returns the mean and stdev of a target X in the desired length.
     '''
     if normalize:
-        return (X - np.mean(X, axis=(1,2,3), keepdims=True)) / np.std(X, axis=(1,2,3), keepdims=True)
+        newX = (X - np.mean(X, axis=(1,2,3), keepdims=True)) / np.std(X, axis=(1,2,3), keepdims=True)
     else:
-        return X - np.mean(X, axis=(1,2,3), keepdims=True)
+        newX = X - np.mean(X, axis=(1,2,3), keepdims=True)
+    return newX
 
+def one_hot(idx, depth):
+    '''
+    Generates one hot vector
+    '''
+    vect = np.zeros(depth)
+    vect[idx] = 1
+    return vect
 
 def load_data(file_name, shape=(int(128/4),int(98/4))):
     '''
@@ -37,11 +53,9 @@ def load_data(file_name, shape=(int(128/4),int(98/4))):
     for i in range(num_examples):
         str_list = df.pixels[i].split(' ')
         pixel_flat = np.array([int(x) for x in str_list])
-        # pixel_flat = pixel_flat[:400]
         pixel_2d = np.reshape(pixel_flat, newshape=(shape[0], shape[1], 1))
-        yd[i]= int(df.emotion[i])
-
         Xd[i] = pixel_2d
+        yd[i] = one_hot(int(df.emotion[i]), num_classes)
     return Xd, yd
 
 
@@ -52,29 +66,33 @@ def load_crowd_labels(file_name):
     df = pd.read_csv(file_name)
     num_examples, num_classes = len(df), len(df.iloc[0,1:])
     print num_examples, num_classes
-    yc = np.empty((40, 6), dtype=float)
-    for i in range(40):
+    yc = np.empty((num_examples, 6), dtype=float)
+    for i in range(num_examples):
         yc[i] = np.array(df.iloc[i,1:])
-    print "crowd labels loaded"
+    print "crowd labels loaded. example:", list(yc[0])
     return yc
 
 def process_target(y, y_c, alpha=0.1, mode='disturb'):
     '''
-      y: the ground truth targets for a minibatch
-      y_c: the unnormalized label frequency vector for the minibatch
+      y: the ground truth targets for a batch
+      y_c: the unnormalized label frequencies for the batch
       mode: a string, either None or "disturb" or "soft"
       alpha: noise rate
     '''
     # Normalize it
-    y_n = y_c / np.sum(y_c, axis=0)
+    y_n = y_c / np.sum(y_c, axis=1, keepdims=True)
+    classes = y.shape[1]
     if mode == 'disturb':
-        new_targ_idx = np.random.choice(a=np.ones(len(y)), p=y_n)
-        return tf.one_hot(new_targ_idx,7)
+        for i in range(len(y_n)):
+            new_targ_idx = int(np.random.choice(a=np.ones(classes), p=y_n[i]))
+            #print new_targ_idx
+            y_n[i] = one_hot(new_targ_idx,classes)
     elif mode == 'soft':
-        y_new = (y + alpha * y_n)/(1 + alpha)
-        return y_new
+        y_n = (y + alpha * y_n)/(1 + alpha)
+    return y_n
 
 def conv2d(x, W):
+    '''Generates convolutional layer according to vgg.'''
     return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
 
 def max_pool_2x2(x, name=None):
@@ -94,6 +112,7 @@ def bias_variable(shape):
 
 def vgg(X):
     '''
+      Custom with dropout and less units in FC layers.
       X: float32 tensor containing the training examples
       Returns:
       y_out: output layer
@@ -168,7 +187,6 @@ def vgg(X):
         # fc1
     with tf.name_scope('fc1') as scope:
         shape = int(np.prod(pool3.get_shape()[1:]))
-        print 'params:', shape, 'shape:', pool3.get_shape()
         fc1w = weight_variable([shape, 1024])
         fc1b = bias_variable([1024])
         pool3_flat = tf.reshape(pool3, [-1, shape])
@@ -194,33 +212,35 @@ def vgg(X):
         y_out = tf.nn.bias_add(tf.matmul(fc2, fc3w), fc3b)
     return y_out, keep_prob
 
-def plot_losses():
-    plt.subplot(3, 1, 1)
-    plt.plot(losses)
-    plt.grid(True)
-    plt.title('Loss')
-    plt.xlabel('Epoch number')
-    plt.ylabel('cross-entropy loss')
-    plt.show()
-
 def main(_):
     print FLAGS.data_dir
     train_mode = FLAGS.train_mode
     # Import data
-    Xd, yd = load_data(os.path.join(FLAGS.data_dir, 'ck_tiny_data.csv'))
+    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name))
+    data_size = Xd.shape[0]
+
+    # Crowdsource part
+    is_crowd_train = False
+    if train_mode == 'disturb' or train_mode == 'soft':
+        print 'crowd training enabled'
+        is_crowd_train = True
+        yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
+
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
 
-    # Create Model
+    # Create model
     X = tf.placeholder(tf.float32, [None, Xd.shape[1], Xd.shape[2], 1])
     y = tf.placeholder(tf.int64, [None, 6])
 
-    # Get output and loss
+    # Get output
     y_out, keep_prob = vgg(X)
+
+    # loss variable
     mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                                 labels=y,
                                 logits=y_out))
 
-    # have tensorflow compute accuracy
+    # compute accuracy
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
@@ -229,70 +249,91 @@ def main(_):
     with tf.control_dependencies(extra_update_ops):
         train_step = tf.train.AdamOptimizer(4e-4).minimize(mean_loss)
 
+    # prepare datasets
+    data_indices = np.arange(data_size)
+    np.random.shuffle(data_indices)
+    Xd = Xd[data_indices]
+    yd = yd[data_indices]
+    if is_crowd_train:
+        yc = yc[data_indices]
+
+    # training and testing sets
+    slice_idx = int(math.ceil(data_size*0.8))
+    X_train = Xd[0:slice_idx]
+    y_train = yd[0:slice_idx]
+    X_test = Xd[slice_idx:]
+    y_test = yd[slice_idx:]
+
+    # preprocess
+    X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+    X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+
     # save model
     saver = tf.train.Saver()
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
             sess.run(tf.global_variables_initializer())
-            # print("TRAIN:", train_indices, "TEST:", test_indices)
+            # k_fold = KFold(n_splits=len(Xd))
+            # for train_indices, test_indices in k_fold.split(Xd):
             print('Training')
-            # shuffle indicies
-            train_indicies = np.arange(Xd.shape[0])
-            np.random.shuffle(train_indicies)
 
-            # Crowdsource part
-            is_crowd_train = False
-            if train_mode == 'disturb' or train_mode == 'soft':
-                print 'crowd training enabled'
-                is_crowd_train = True
-                yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
-
-            # counter
+            # track some stats
             iter_cnt = 0
-            losses = []
+            losses = {'train':[],'test':[]}
+
             # start timing
             start_time = time.time()
-            epochs = 50
-            batch_size = 48
-            for e in range(epochs):
-                # make sure we iterate over the dataset once
-                for i in range(int(math.ceil(Xd.shape[0] / batch_size))):
-                    start_idx = (i * batch_size) % Xd.shape[0]
-                    indices = train_indicies[start_idx:start_idx + batch_size]
 
+            # run parameters
+            epochs = 30
+            batch_size = 32
+            noise_rate = 0.1
+
+            train_indices = np.arange(slice_idx)
+            for e in range(epochs):
+                for i in range(int(math.ceil(X_train.shape[0] / batch_size))):
+                    start_idx = (i * batch_size) % X_train.shape[0]
+                    indices = train_indices[start_idx:start_idx + batch_size]
                     # current mini batch
-                    X_mini, y_mini = Xd[indices, :], yd[indices]
+                    X_mini, y_mini = X_train[indices, :], y_train[indices]
                     actual_batch_size = y_mini.shape[0]
 
                     # process new targets
                     if is_crowd_train:
                         yc_mini = yc[indices]
-                        y_mini = [process_target(yc_mini, alpha, train_mode) for y in y_mini]
+                        y_mini = process_target(y_mini, yc_mini, noise_rate, train_mode)
 
-                    train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:1.0})
+                    train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.8})
                     iter_cnt += 1
 
-                loss, acc = sess.run([mean_loss, accuracy],
+                # compute the losses
+                train_loss, train_acc = sess.run([mean_loss, accuracy],
                             feed_dict={X:X_mini, y:y_mini, keep_prob:1.0})
-                losses.append(loss)
-                print("Epoch {2}, Overall loss = {0:.3g} and accuracy of {1:.3g}" \
-                      .format(loss, acc, e + 1))
+                test_loss, test_acc = sess.run([mean_loss, accuracy],
+                            feed_dict={X:X_test, y:y_test, keep_prob:1.0})
 
-            plot_losses(losses)
+                losses['train'].append(1-train_acc)
+                losses['test'].append(1-test_acc)
+                print("Epoch {0}, Train loss = {1:.5g}, train accuracy = {2:.5f}, Test loss = {3: .5g}, Test Accuracy = {4:.5f}" \
+                      .format(e+1, train_loss, train_acc, test_loss, test_acc))
+
             end_time = time.time()
             print 'train time: {:.3f}'.format(start_time-end_time)
-            return total_loss, total_correct
 
-            save_path = saver.save(sess, os.path.join(FLAGS.data_dir,FLAGS.model_name))
+            save_path = saver.save(sess, os.path.join(output_dir,FLAGS.model_name))
             print("Model saved in file: %s" % save_path)
-            print('Validation')
-            # run_model(sess, y_out, mean_loss, Xd[test_indices], yd[test_indices], epochs = 1, batch_size
-            #print('test')
-            # run_model(sess, y_out,mean_loss,Xd[0:12,:],yd[0:12],1,12) # test
+            print('Test')
 
-# variables
-# epochs, is_training, is_crowd_train, alpha, train_mode, batch_size
+            plt.figure(1)
+            plt.grid(True)
+            plt.title('Loss')
+            plt.xlabel('Epoch number')
+            plt.ylabel('Recognition Error Rate')
+            for key, value in losses.items():
+                plt.plot(value, label=key)
+            plt.legend()
+            plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

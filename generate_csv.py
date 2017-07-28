@@ -2,9 +2,11 @@ import pandas as pd
 import os
 from PIL import Image
 import argparse
+import numpy as np
 
 # no contempt
 FLAGS = None
+
 def main(image_list):
     root, directories, files = os.walk(FLAGS.data_dir).next()
     directories = sorted(directories)
@@ -23,10 +25,11 @@ def main(image_list):
             image_file = templist[-1]
             # check if it's part of the dataset
             if image_file.rstrip('.png') in image_list:
-                img = Image.open(temppath2+'/'+image_file)
-                img = img.resize((128,98), Image.ANTIALIAS)
+                img = Image.open(temppath2+'/'+image_file).convert('L')
+                img = img.resize((128/4,98/4), Image.ANTIALIAS)
                 img_shape = img.size
-                img_flat = list(img.getdata())
+                img_flat = np.asarray(img.getdata())
+                print(img_flat.shape)
                 img_str = ''
                 for idx in range(len(img_flat)):
                     if idx != len(img_flat) - 1:
@@ -40,7 +43,7 @@ def main(image_list):
     df_result = pd.DataFrame({'image_url':image_names, 'pixels':pixels_list})
 
     # write to file
-    df_result.to_csv('compressed_images.csv', index=False)
+    df_result.to_csv('tiny_images.csv', index=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
