@@ -99,13 +99,41 @@ def vgg(X):
     pool3 = max_pool_2x2(conv3_3, name='pool3')
     # pool3 = tf.nn.dropout(pool3, keep_prob)
 
+    # conv4_1
+    with tf.name_scope('conv4_1') as scope:
+        kernel = weight_variable([3, 3, 128, 128])
+        conv = conv2d(pool3, kernel)
+        biases = bias_variable([128])
+        out = tf.nn.bias_add(conv, biases)
+        conv4_1 = tf.nn.relu(out, name=scope)
+
+    # conv4_2
+    with tf.name_scope('conv4_2') as scope:
+        kernel = weight_variable([3, 3, 128, 128])
+        conv = conv2d(conv4_1, kernel)
+        biases = bias_variable([128])
+        out = tf.nn.bias_add(conv, biases)
+        conv4_2 = tf.nn.relu(out, name=scope)
+
+    # conv4_3
+    with tf.name_scope('conv4_3') as scope:
+        kernel = weight_variable([3, 3, 128, 128])
+        conv = conv2d(conv4_2, kernel)
+        biases = bias_variable([128])
+        out = tf.nn.bias_add(conv, biases)
+        conv4_3 = tf.nn.relu(out, name=scope)
+
+    # pool3
+    pool4 = max_pool_2x2(conv4_3, name='pool3')
+    # pool4 = tf.nn.dropout(pool4, keep_prob)
+
     # fc1
     with tf.name_scope('fc1') as scope:
-        shape = int(np.prod(pool3.get_shape()[1:]))
+        shape = int(np.prod(pool4.get_shape()[1:]))
         fc1w = weight_variable([shape, 1024])
         fc1b = bias_variable([1024])
-        pool3_flat = tf.reshape(pool3_drop, [-1, shape])
-        fc1l = tf.nn.bias_add(tf.matmul(pool3_flat, fc1w), fc1b)
+        pool4_flat = tf.reshape(pool4, [-1, shape])
+        fc1l = tf.nn.bias_add(tf.matmul(pool4_flat, fc1w), fc1b)
         fc1 = tf.nn.relu(fc1l)
 
     # dropout_2

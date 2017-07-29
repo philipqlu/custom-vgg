@@ -15,7 +15,8 @@ from vgg13_model import vgg
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_32_24_x2.csv'
+data_file_name = 'ck_data_64_49_x2.csv'
+crowd_file_name = 'crowd_x2.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -26,8 +27,9 @@ expression_table = {'Anger'    : 0,
 
 NOISES = [0, 0.05, 0.1, 0.2, 0.5, 0.8]
 noise_rate = 0.1
-SHAPE = (98, 128)
-AUGMENT = (True, 'concat')
+SHAPE = (49, 64)
+AUGMENT = False
+AUGMENT_TYPE='replace'
 
 def one_hot(idx, depth):
     '''
@@ -69,7 +71,7 @@ def augment_data(X):
                                      crop_size=[X.shape[1], X.shape[2]])
     return X_out
 
-def load_data(file_name, shape, augment=(True, 'concat')):
+def load_data(file_name, shape):
     '''
     Loads images and targets from csv and normalizes images.
     params:
@@ -87,16 +89,6 @@ def load_data(file_name, shape, augment=(True, 'concat')):
         pixel_2d = np.reshape(pixel_flat, newshape=(shape[0], shape[1], 1))
         Xd[i] = pixel_2d
         yd[i] = one_hot(int(df.emotion[i]), num_classes)
-    if augment[0]:
-        Xn = augment_data(Xd)
-        with tf.Session() as s:
-            Xn = Xn.eval()
-        if augment[1] == 'concat':
-            print len(Xn.shape), len(Xd.shape)
-            Xd = np.concatenate((Xd,Xn), axis=0)
-            yd = np.concatenate((yd,yd), axis=0)
-        else:
-            Xd = Xn
     return Xd, yd
 
 def load_crowd_labels(file_name):
@@ -120,11 +112,14 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
       mode: a string, either None or "disturb" or "soft"
       alpha: noise rate
     '''
-    # Normalize it
+    # Normalize crowd labels
     y_n = y_c / np.sum(y_c, axis=1, keepdims=True)
     classes = y.shape[1]
     if mode == 'disturb':
+        corr_labels = np.argmax(y,axis=1)
         for i in range(len(y_n)):
+            y_n[i] = np.dot((1/classes) * alpha, y_n[i])
+            y_n[i][corr_labels[i]] += 1 - (1/classes) * alpha
             new_targ_idx = int(np.random.choice(a=classes, p=y_n[i]))
             y_n[i] = one_hot(new_targ_idx,classes)
     elif mode == 'soft':
@@ -139,9 +134,7 @@ def main(_):
     train_mode = FLAGS.train_mode
 
     # Import data and labels
-    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name),
-                       shape=SHAPE,
-                       augment=AUGMENT)
+    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name),shape=SHAPE)
     data_size = Xd.shape[0]
 
     # Crowdsource part
@@ -149,7 +142,7 @@ def main(_):
     if train_mode == 'disturb' or train_mode == 'soft':
         print 'crowd training enabled'
         is_crowd_train = True
-        yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
+        yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd_x2.csv'))
 
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
 
@@ -169,14 +162,20 @@ def main(_):
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
+    # confusion matrix
+    confusion_matrix = tf.confusion_matrix(labels=tf.argmax(y,axis=1),
+                                        predictions=tf.argmax(y_out,axis=1),
+                                        num_classes=6)
+
     # required dependencies for batch normalization
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(extra_update_ops):
-        train_step = tf.train.AdamOptimizer(1e-3).minimize(mean_loss)
+        train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
+                                            epsilon=0.05).minimize(mean_loss)
 
     # run parameters
-    epochs = 50
-    batch_size = 64
+    epochs = 100
+    batch_size = 32
 
     # shuffle indices
     data_indices = np.arange(data_size)
@@ -191,7 +190,7 @@ def main(_):
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-            splits = 5
+            splits = 10
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
@@ -201,22 +200,28 @@ def main(_):
                 # but only way with such a small dataset.
                 sess.run(tf.global_variables_initializer())
                 fold += 1
-                if fold > 1:
-                    break
 
                 # training and val splits
                 X_train = Xd[train_indices]
                 y_train = yd[train_indices]
                 X_test = Xd[test_indices]
                 y_test = yd[test_indices]
+                print len(X_train), len(X_test)
 
                 if is_crowd_train:
                     yc_train = yc[train_indices]
                     if train_mode=='soft':
-                        y_train = process_target(y_train, y_c, noise_rate, 'soft')
+                        y_train = process_target(y_train, yc_train, noise_rate, 'soft')
 
-                # preprocess
+                # preprocess / augment training data
                 img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
+                if AUGMENT:
+                    X_n = augment_data(X_train).eval()
+                    if AUGMENT_TYPE == 'concat':
+                        X_train = np.concatenate((X_train,X_n), axis=0)
+                        y_train = np.concatenate((y_train,y_train), axis=0)
+                    else:
+                        X_train = X_n
                 X_train = (X_train - img_mean) / img_std
                 X_test  = (X_test  - img_mean) / img_std
 
@@ -241,7 +246,7 @@ def main(_):
 
                         # process new targets for the batch
                         if train_mode == 'disturb':
-                            y_mini = process_target(y_mini, yc[indices], noise_rate, train_mode)
+                            y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
                         elif train_mode == 'disturb_uniform':
                             y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
 
@@ -264,12 +269,25 @@ def main(_):
                 print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
                 total_val_acc += max_val_acc
 
+                # Save our important summaries
+                model_path = os.path.join(output_dir,FLAGS.model_name)
+                if not os.path.exists(model_path):
+                    os.mkdir(model_path)
+                confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
+                np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
+                save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)))
+                out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
+                out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
+                print("Model saved in file: %s" % save_path)
+
             end_time = time.time()
-            print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,total_val_acc / (fold))
+            val_acc = total_val_acc / (fold)
+            print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,val_acc)
             print 'Train time: {:.3f}'.format(end_time-start_time)
 
-            save_path = saver.save(sess, os.path.join(output_dir,FLAGS.model_name))
-            print("Model saved in file: %s" % save_path)
+
+
+
             # print('Test')
 
             plt.figure(1)
