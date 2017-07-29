@@ -9,12 +9,13 @@ import pandas as pd
 import os
 import sys
 import numpy as np
+import random
 from vgg13_model import vgg
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_32_24.csv'
+data_file_name = 'ck_data_32_24_x2.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -25,6 +26,8 @@ expression_table = {'Anger'    : 0,
 
 NOISES = [0, 0.05, 0.1, 0.2, 0.5, 0.8]
 noise_rate = 0.1
+SHAPE = (98, 128)
+AUGMENT = (True, 'concat')
 
 def one_hot(idx, depth):
     '''
@@ -34,9 +37,45 @@ def one_hot(idx, depth):
     vect[idx] = 1
     return vect
 
-def load_data(file_name, shape=(int(128/4),int(98/4))):
+def show_image(img):
+    plt.figure()
+    plt.imshow(img.reshape((img.shape[0],img.shape[1])), cmap='gray')
+    plt.show()
+
+def image_augment(image):
+    '''
+    Performs some transformations on the image
+    '''
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.random_brightness(image, max_delta=63)
+    image = tf.image.random_contrast(image, lower=0.2, upper=1.5)
+    return image
+
+def augment_data(X):
+    '''
+    Does data augmentation on input images X.
+    '''
+    X_out = tf.map_fn(image_augment, X)
+    crop_boxes = np.zeros((X.shape[0], 4))
+    for box in crop_boxes:
+        # [y1, x1, y2, x2]
+        box[0] = random.uniform(0,0.12,)
+        box[1] = random.uniform(0,0.12)
+        box[2] = random.uniform(0.88,1)
+        box[3] = random.uniform(0.88,1)
+    X_out = tf.image.crop_and_resize(X_out,
+                                     boxes=crop_boxes,
+                                     box_ind=np.arange(X.shape[0]),
+                                     crop_size=[X.shape[1], X.shape[2]])
+    return X_out
+
+def load_data(file_name, shape, augment=(True, 'concat')):
     '''
     Loads images and targets from csv and normalizes images.
+    params:
+      augment: tuple of (bool, str)
+         1. True to distort images
+         2. 'concat' if we add these to X, 'replace' to replace original imgs
     '''
     df = pd.read_csv(file_name)
     num_examples, num_classes, X_depth = len(df), len(set(df.emotion)), 1
@@ -48,8 +87,17 @@ def load_data(file_name, shape=(int(128/4),int(98/4))):
         pixel_2d = np.reshape(pixel_flat, newshape=(shape[0], shape[1], 1))
         Xd[i] = pixel_2d
         yd[i] = one_hot(int(df.emotion[i]), num_classes)
+    if augment[0]:
+        Xn = augment_data(Xd)
+        with tf.Session() as s:
+            Xn = Xn.eval()
+        if augment[1] == 'concat':
+            print len(Xn.shape), len(Xd.shape)
+            Xd = np.concatenate((Xd,Xn), axis=0)
+            yd = np.concatenate((yd,yd), axis=0)
+        else:
+            Xd = Xn
     return Xd, yd
-
 
 def load_crowd_labels(file_name):
     '''
@@ -66,6 +114,7 @@ def load_crowd_labels(file_name):
 
 def process_target(y, y_c, alpha=0.1, mode='disturb'):
     '''
+    params:
       y: the ground truth targets for a batch
       y_c: the unnormalized label frequencies for the batch
       mode: a string, either None or "disturb" or "soft"
@@ -87,10 +136,12 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
     return y_n
 
 def main(_):
-    print FLAGS.data_dir
     train_mode = FLAGS.train_mode
-    # Import data
-    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name))
+
+    # Import data and labels
+    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name),
+                       shape=SHAPE,
+                       augment=AUGMENT)
     data_size = Xd.shape[0]
 
     # Crowdsource part
@@ -101,7 +152,6 @@ def main(_):
         yc = load_crowd_labels(os.path.join(FLAGS.data_dir, 'crowd.csv'))
 
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
-    print '===\n' * 3
 
     # Create model
     X = tf.placeholder(tf.float32, [None, Xd.shape[1], Xd.shape[2], 1])
@@ -122,12 +172,11 @@ def main(_):
     # required dependencies for batch normalization
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(extra_update_ops):
-        train_step = tf.train.AdamOptimizer(4e-4).minimize(mean_loss)
+        train_step = tf.train.AdamOptimizer(1e-3).minimize(mean_loss)
 
     # run parameters
-    epochs = 30
+    epochs = 50
     batch_size = 64
-
 
     # shuffle indices
     data_indices = np.arange(data_size)
@@ -137,27 +186,12 @@ def main(_):
     if is_crowd_train:
         yc = yc[data_indices]
 
-    # slice_idx = int(math.ceil(data_size*0.7))
-    # X_train = Xd[0:slice_idx]
-    # y_train = yd[0:slice_idx]
-    # X_test = Xd[slice_idx:]
-    # y_test = yd[slice_idx:]
-    # if is_crowd_train:
-    #     yc = yc[data_indices]
-    #     yc = yc[:slice_idx]
-    #     if train_mode=='soft':
-    #         y_train = process_target(y_train, y_c, noise_rate, 'soft')
-    #
-    # # preprocess
-    # X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
-    # X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
-
     # save model
     saver = tf.train.Saver()
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
-            splits = 10
+            splits = 5
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
@@ -167,6 +201,8 @@ def main(_):
                 # but only way with such a small dataset.
                 sess.run(tf.global_variables_initializer())
                 fold += 1
+                if fold > 1:
+                    break
 
                 # training and val splits
                 X_train = Xd[train_indices]
@@ -180,8 +216,9 @@ def main(_):
                         y_train = process_target(y_train, y_c, noise_rate, 'soft')
 
                 # preprocess
-                X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
-                X_test  = (X_test  - np.mean(X_train, axis=0)) / np.std(X_train, axis=(0))
+                img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
+                X_train = (X_train - img_mean) / img_std
+                X_test  = (X_test  - img_mean) / img_std
 
                 print('Training')
                 # track some stats
@@ -208,12 +245,12 @@ def main(_):
                         elif train_mode == 'disturb_uniform':
                             y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
 
-                        train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.8})
+                        train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.5})
                         iter_cnt += 1
 
                     # compute the losses
                     train_loss, train_acc = sess.run([mean_loss, accuracy],
-                                feed_dict={X:X_mini, y:y_mini, keep_prob:1.0})
+                                feed_dict={X:X_train, y:y_train, keep_prob:1.0})
                     test_loss, test_acc = sess.run([mean_loss, accuracy],
                                 feed_dict={X:X_test, y:y_test, keep_prob:1.0})
 
@@ -226,7 +263,8 @@ def main(_):
                           .format(e, train_loss, train_acc, test_loss, test_acc, fold))
                 print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
                 total_val_acc += max_val_acc
-                end_time = time.time()
+
+            end_time = time.time()
             print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,total_val_acc / (fold))
             print 'Train time: {:.3f}'.format(end_time-start_time)
 
