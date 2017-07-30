@@ -15,7 +15,8 @@ from vgg13_model import vgg
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_64_49_x2.csv'
+data_file_name = 'ck_data_48_48_x2.csv'
+test_file_name = 'jaffe_48_48.csv'
 crowd_file_name = 'crowd_x2.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
@@ -25,9 +26,8 @@ expression_table = {'Anger'    : 0,
                     'Sadness'  : 4,
                     'Surprise' : 5}
 
-NOISES = [0, 0.05, 0.1, 0.2, 0.5, 0.8]
-noise_rate = 0.1
-SHAPE = (49, 64)
+noises = [0.15]
+SHAPE = (48, 48)
 AUGMENT = False
 AUGMENT_TYPE='replace'
 
@@ -49,8 +49,8 @@ def image_augment(image):
     Performs some transformations on the image
     '''
     image = tf.image.random_flip_left_right(image)
-    image = tf.image.random_brightness(image, max_delta=63)
-    image = tf.image.random_contrast(image, lower=0.2, upper=1.5)
+    #image = tf.image.random_brightness(image, max_delta=63)
+    image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
     return image
 
 def augment_data(X):
@@ -117,17 +117,21 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
     classes = y.shape[1]
     if mode == 'disturb':
         corr_labels = np.argmax(y,axis=1)
+        print corr_labels[:5]
         for i in range(len(y_n)):
-            y_n[i] = np.dot((1/classes) * alpha, y_n[i])
-            y_n[i][corr_labels[i]] += 1 - (1/classes) * alpha
+            y_n[i] *= alpha
+            y_n[i][corr_labels[i]] += 1 - alpha
+            # y_n[i] = np.dot((1/classes) * alpha, y_n[i])
+            # y_n[i][corr_labels[i]] += 1 - (1/classes) * alpha
             new_targ_idx = int(np.random.choice(a=classes, p=y_n[i]))
             y_n[i] = one_hot(new_targ_idx,classes)
     elif mode == 'soft':
         y_n = (y + alpha * y_n)/(1 + alpha)
     elif mode == 'disturb_uniform':
         for i in range(len(y)):
-            new_targ_idx = int(np.random.choice(a=classes))
+            new_targ_idx = int(np.random.choice(a=classes, p=y))
             y_n[i] = one_hot(new_targ_idx,classes)
+
     return y_n
 
 def main(_):
@@ -171,7 +175,7 @@ def main(_):
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(extra_update_ops):
         train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
-                                            epsilon=0.05).minimize(mean_loss)
+                                            epsilon=0.02).minimize(mean_loss)
 
     # run parameters
     epochs = 100
@@ -194,111 +198,106 @@ def main(_):
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
-            total_val_acc = 0
+            # total_val_acc = 0
             for train_indices, test_indices in k_fold.split(Xd):
-                # We're retraining our model each time now. It's comp expensive
-                # but only way with such a small dataset.
-                sess.run(tf.global_variables_initializer())
                 fold += 1
+                for noise_rate in noises:
+                    sess.run(tf.global_variables_initializer())
+                    # training and val splits
+                    X_train = Xd[train_indices]
+                    y_train = yd[train_indices]
+                    X_test = Xd[test_indices]
+                    y_test = yd[test_indices]
+                    print len(X_train), len(X_test)
 
-                # training and val splits
-                X_train = Xd[train_indices]
-                y_train = yd[train_indices]
-                X_test = Xd[test_indices]
-                y_test = yd[test_indices]
-                print len(X_train), len(X_test)
+                    if is_crowd_train:
+                        yc_train = yc[train_indices]
+                        # if train_mode=='soft':
+                        #     y_train = process_target(y_train, yc_train, noise_rate, 'soft')
 
-                if is_crowd_train:
-                    yc_train = yc[train_indices]
-                    if train_mode=='soft':
-                        y_train = process_target(y_train, yc_train, noise_rate, 'soft')
+                    # preprocess / augment training data
+                    img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
+                    if AUGMENT:
+                        X_n = augment_data(X_train).eval()
+                        if AUGMENT_TYPE == 'concat':
+                            X_train = np.concatenate((X_train,X_n), axis=0)
+                            y_train = np.concatenate((y_train,y_train), axis=0)
+                        else:
+                            X_train = X_n
+                    X_train = (X_train - img_mean) / img_std
+                    X_test  = (X_test  - img_mean) / img_std
 
-                # preprocess / augment training data
-                img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
-                if AUGMENT:
-                    X_n = augment_data(X_train).eval()
-                    if AUGMENT_TYPE == 'concat':
-                        X_train = np.concatenate((X_train,X_n), axis=0)
-                        y_train = np.concatenate((y_train,y_train), axis=0)
-                    else:
-                        X_train = X_n
-                X_train = (X_train - img_mean) / img_std
-                X_test  = (X_test  - img_mean) / img_std
+                    print('Training')
+                    # track some stats
+                    iter_cnt = 0
+                    losses = {'train':[],'test':[]}
+                    best_epoch = 0
+                    max_val_acc = 0
 
-                print('Training')
-                # track some stats
-                iter_cnt = 0
-                losses = {'train':[],'test':[]}
-                best_epoch = 0
-                max_val_acc = 0
+                    # start timing
+                    start_time = time.time()
 
-                # start timing
-                start_time = time.time()
+                    train_indices = np.arange(len(X_train))
+                    for e in range(epochs):
+                        for i in range(int(math.ceil(X_train.shape[0] / batch_size))):
+                            start_idx = (i * batch_size) % X_train.shape[0]
+                            indices = train_indices[start_idx:start_idx + batch_size]
+                            # current mini batch
+                            X_mini, y_mini = X_train[indices, :], y_train[indices]
+                            actual_batch_size = y_mini.shape[0]
 
-                train_indices = np.arange(len(X_train))
-                for e in range(epochs):
-                    for i in range(int(math.ceil(X_train.shape[0] / batch_size))):
-                        start_idx = (i * batch_size) % X_train.shape[0]
-                        indices = train_indices[start_idx:start_idx + batch_size]
-                        # current mini batch
-                        X_mini, y_mini = X_train[indices, :], y_train[indices]
-                        actual_batch_size = y_mini.shape[0]
+                            # process new targets for the batch
+                            if train_mode == 'disturb':
+                                y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
+                            elif train_mode == 'disturb_uniform':
+                                y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
+                            elif train_mode == 'soft':
+                                y_mini = process_target(y_mini, yc_train[indices], noise_rate, 'soft')
+                            train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.5})
+                            iter_cnt += 1
 
-                        # process new targets for the batch
-                        if train_mode == 'disturb':
-                            y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
-                        elif train_mode == 'disturb_uniform':
-                            y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
+                        # compute the losses
+                        train_loss, train_acc = sess.run([mean_loss, accuracy],
+                                    feed_dict={X:X_train, y:y_train, keep_prob:1.0})
+                        test_loss, test_acc = sess.run([mean_loss, accuracy],
+                                    feed_dict={X:X_test, y:y_test, keep_prob:1.0})
 
-                        train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.5})
-                        iter_cnt += 1
+                        losses['train'].append(1-train_acc)
+                        losses['test'].append(1-test_acc)
+                        if max_val_acc < test_acc:
+                            max_val_acc = test_acc
+                            best_epoch = e
+                        print("Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
+                              .format(e, train_loss, train_acc, test_loss, test_acc, fold))
+                    print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
+                    # total_val_acc += max_val_acc
 
-                    # compute the losses
-                    train_loss, train_acc = sess.run([mean_loss, accuracy],
-                                feed_dict={X:X_train, y:y_train, keep_prob:1.0})
-                    test_loss, test_acc = sess.run([mean_loss, accuracy],
-                                feed_dict={X:X_test, y:y_test, keep_prob:1.0})
-
-                    losses['train'].append(1-train_acc)
-                    losses['test'].append(1-test_acc)
-                    if max_val_acc < test_acc:
-                        max_val_acc = test_acc
-                        best_epoch = e
-                    print("Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
-                          .format(e, train_loss, train_acc, test_loss, test_acc, fold))
-                print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
-                total_val_acc += max_val_acc
-
-                # Save our important summaries
-                model_path = os.path.join(output_dir,FLAGS.model_name)
-                if not os.path.exists(model_path):
-                    os.mkdir(model_path)
-                confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
-                np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
-                save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)))
-                out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
-                out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
-                print("Model saved in file: %s" % save_path)
-
-            end_time = time.time()
-            val_acc = total_val_acc / (fold)
-            print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,val_acc)
-            print 'Train time: {:.3f}'.format(end_time-start_time)
-
-
+                    # Save our important summaries
+                    model_name = FLAGS.model_name +'noise_' + str(noise_rate)
+                    model_path = os.path.join(output_dir, model_name)
+                    if not os.path.exists(model_path):
+                        os.mkdir(model_path)
+                    confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
+                    np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
+                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)))
+                    out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
+                    out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
+                    print("Model saved in file: %s" % save_path)
+                    end_time = time.time()
+                    print 'Train time: {:.3f}'.format(end_time-start_time)
 
 
-            # print('Test')
-
-            plt.figure(1)
-            plt.grid(True)
-            plt.title('Loss')
-            plt.xlabel('Epoch number')
-            plt.ylabel('Recognition Error Rate')
-            for key, value in losses.items():
-                plt.plot(value, label=key)
-            plt.legend()
-            plt.show()
+            # val_acc = total_val_acc / (fold)
+            # print 'Cross-val error with {0} folds = {1:.3f}'.format(fold,val_acc)
+            # plt.style.use('ggplot')
+            # plt.grid(True)
+            # plt.title('Loss')
+            # plt.xlabel('Epoch number')
+            # plt.ylabel('Recognition Error Rate')
+            # for key, value in losses.items():
+            #     plt.plot(value, label=key, )
+            # plt.legend()
+            # plt.savefig()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
