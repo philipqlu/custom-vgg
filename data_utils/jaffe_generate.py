@@ -4,7 +4,7 @@ import pandas as pd
 import argparse
 import os
 
-in_path = 'jaffeimages/jaffe'
+in_path = 'jaffeimages/jaffe/'
 out_file = 'jaffe_48_48.csv'
 
 # Sample name format: KA.AN1.39
@@ -34,15 +34,14 @@ def process(file_path):
         emotion = get_emotion(img_file)
         if emotion != -1:
             img_path = os.path.join(file_path, img_file)
-            img = Image.open(img_path).convert('L').resize((48,48),Image.ANTIALIAS)
+            img = Image.open(img_path).convert('L').resize((64,64),Image.ANTIALIAS)
             img_flat = np.asarray(img.getdata())
-            img_str = ' '
+            img_str = ''
             for idx in range(len(img_flat)):
                 if idx != len(img_flat) - 1:
                     img_str += str(img_flat[idx]) + " "
                 else:
                     img_str += str(img_flat[idx])
-
             out_data['pixels'].append(img_str)
             out_data['emotion'].append(emotion)
     df = pd.DataFrame(out_data)
