@@ -5,12 +5,12 @@ import argparse
 from sklearn.model_selection import KFold
 import os
 from helpers import *
-from vgg13_model import vgg
+from vgg13_model import build_model
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_32_24.csv'
+data_file_name = 'ck_data_48_48.csv'
 test_file_name = 'jaffe_48_48.csv'
 crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
@@ -22,7 +22,7 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 log_dir = 'tmp/logs'
 noises = [0.1, 0.05, 0.5, 0.01]
-SHAPE = (24, 32)
+SHAPE = (48, 48)
 augment = False
 augment_type = 'replace'
 
@@ -42,28 +42,26 @@ def main(_):
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
 
     # Create model
-    X = tf.placeholder(tf.float32, [None, Xd.shape[1], Xd.shape[2], 1])
-    y = tf.placeholder(tf.int64, [None, 6])
-
-    # Get output
-    y_out, keep_prob = vgg(X)
+    model = build_model(num_classes=6, model_name='CustomVGG13')
+    X, y, y_out, keep_prob = model.input, model.target, model.logits, model.keep_prob
 
     # loss variable
     mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                                 labels=y,
                                 logits=y_out), name='mean_loss')
-    tf.summary.scalar('mean_loss', mean_loss)
+    tf.summary.scalar('mean_loss1', mean_loss)
 
     # compute accuracy
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32),
                               name='accuracy')
-    tf.summary.scalar('accuracy', accuracy)
+    tf.summary.scalar('accuracy1', accuracy)
 
     # confusion matrix
     confusion_matrix = tf.confusion_matrix(labels=tf.argmax(y,axis=1),
                                            predictions=tf.argmax(y_out,axis=1),
-                                           num_classes=6)
+                                           num_classes=6,
+                                           name='confusion_matrix')
 
     # required dependencies for batch normalization
     extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -72,7 +70,7 @@ def main(_):
                                             epsilon=0.002).minimize(mean_loss)
 
     # run parameters
-    epochs = 3
+    epochs = 1
     batch_size = 16
 
     # shuffle indices
@@ -91,14 +89,14 @@ def main(_):
                                       sess.graph)
             test_writer = tf.summary.FileWriter(log_dir + '/test',
                                       sess.graph)
-            splits = 100
+            splits = 10
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
-            # total_val_acc = 0
             for train_indices, test_indices in k_fold.split(Xd):
                 fold += 1
-
+                if fold>1:
+                    break
                 # training and validation splits
                 X_train, y_train = Xd[train_indices], yd[train_indices]
                 X_test, y_test = Xd[test_indices], yd[test_indices]
@@ -151,8 +149,8 @@ def main(_):
                         if max_val_acc < test_acc:
                             max_val_acc = test_acc
                             best_epoch = e
-                        print("Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
-                              .format(e, train_loss, train_acc, test_loss, test_acc, fold))
+                        print "Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
+                              .format(e, train_loss, train_acc, test_loss, test_acc, fold)
                     print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
 
                     # Save our important summaries
@@ -164,7 +162,6 @@ def main(_):
                     # confusion matrix
                     confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
                     np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
-                    print 'weights for conv2:',sess.run('conv2_1/weights:0')
 
                     #save losses
                     out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
@@ -172,11 +169,12 @@ def main(_):
 
                     # save model
                     saver = tf.train.Saver()
-                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)) + '.ckpt')
+                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)))
                     print("Model saved in file: %s" % save_path)
 
                     end_time = time.time()
                     print 'Train time: {:.3f}'.format(end_time-start_time)
+                    break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
