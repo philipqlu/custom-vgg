@@ -8,9 +8,10 @@ from vgg13_model import vgg
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
+#### Variables ####
 FLAGS = None
-data_file_name = 'ck_data_48_48.csv'
-test_file_name = 'jaffe_48_48.csv'
+data_file_name = 'ck_data_32_24.csv'
+test_file_name = 'ck_data_32_24.csv'
 crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
@@ -21,9 +22,10 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 
 noise = 0.11
-model_path = ''     # where the model is saved
-model_name = ''     # ckpt file name
-SHAPE = (48, 48)
+model_path = ''       # where the model is saved
+model_name = '.ckpt'  # ckpt file name
+SHAPE = (24, 32)
+####
 
 def main(_):
     train_mode = FLAGS.train_mode
@@ -32,13 +34,13 @@ def main(_):
     # Import data and labels
     X_train, y_train = load_data(os.path.join(FLAGS.data_dir, data_file_name),SHAPE)
     X_test, y_test = load_data(os.path.join(FLAGS.data_dir, test_file_name),SHAPE)
+    X_train, X_test = preprocess_images(X_train, X_test)
+
     train_data_size, test_data_size = X_train.shape[0], X_test.shape[0]
 
     # Crowdsource part
-    is_crowd_train = False
     if train_mode == 'disturb' or train_mode == 'soft':
         print 'crowd training enabled'
-        is_crowd_train = True
         y_temp = load_crowd_labels(os.path.join(FLAGS.data_dir, crowd_file_name))
         y_train = process_target(y_train, y_temp, alpha=noise, mode=train_mode)
 
@@ -67,13 +69,12 @@ def main(_):
                                         num_classes=6)
     # restore model
     saver = tf.train.Saver()
-    # saver = tf.train.import_meta_graph(os.path.join(model_path, meta_file))
 
     losses = {'train':0, 'test':0}
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"\
-            saver.restore(sess,model_path+model_name)
+            saver.restore(sess,os.path.join(model_path,model_name))
 
             # compute the losses
             train_loss, train_acc = sess.run([mean_loss, accuracy],

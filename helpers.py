@@ -1,6 +1,55 @@
 from __future__ import division
 import pandas as pd
 import numpy as np
+# import matplotlib.pyplot as plt
+
+def show_image(img):
+    plt.figure()
+    plt.imshow(img.reshape((img.shape[0],img.shape[1])), cmap='gray')
+    plt.show()
+
+def image_augment(image):
+    '''
+    Performs some transformations on the image
+    '''
+    image = tf.image.random_flip_left_right(image)
+    image = tf.image.random_brightness(image, max_delta=63)
+    image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
+    return image
+
+def augment_data(X):
+    '''
+    Does data augmentation on input images X.
+    '''
+    X_out = tf.map_fn(image_augment, X)
+    crop_boxes = np.zeros((X.shape[0], 4))
+    for box in crop_boxes:
+        # [y1, x1, y2, x2]
+        box[0] = random.uniform(0,0.12,)
+        box[1] = random.uniform(0,0.12)
+        box[2] = random.uniform(0.88,1)
+        box[3] = random.uniform(0.88,1)
+    X_out = tf.image.crop_and_resize(X_out,
+                                     boxes=crop_boxes,
+                                     box_ind=np.arange(X.shape[0]),
+                                     crop_size=[X.shape[1], X.shape[2]])
+    return X_out
+
+def preprocess_images(X_train, X_test, augment=False, augment_type='concat'):
+    '''
+    Does standard normalization on train and test set.
+    '''
+    img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
+    if augment:
+        X_n = augment_data(X_train).eval()
+        if augment_type == 'concat':
+            X_train = np.concatenate((X_train,X_n), axis=0)
+            y_train = np.concatenate((y_train,y_train), axis=0)
+        else:
+            X_train = X_n
+    X_train = (X_train - img_mean) / img_std
+    X_test = (X_test  - img_mean) / img_std
+    return X_train, X_test
 
 def one_hot(idx, depth):
     '''
@@ -68,4 +117,4 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
             y_n[i][corr_labels[i]] += 1 - alpha
             new_targ_idx = int(np.random.choice(a=classes, p=y))
             y_n[i] = one_hot(new_targ_idx,classes)
-    return y_n 
+    return y_n

@@ -1,19 +1,16 @@
 import tensorflow as tf
 import math
 import time
-import matplotlib.pyplot as plt
 import argparse
 from sklearn.model_selection import KFold
-import pandas as pd
 import os
-import numpy as np
 from helpers import *
 from vgg13_model import vgg
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_64_64.csv'
+data_file_name = 'ck_data_32_24.csv'
 test_file_name = 'jaffe_48_48.csv'
 crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
@@ -25,57 +22,9 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 log_dir = 'tmp/logs'
 noises = [0.1, 0.05, 0.5, 0.01]
-SHAPE = (64, 64)
-AUGMENT = False
-AUGMENT_TYPE='replace'
-
-def show_image(img):
-    plt.figure()
-    plt.imshow(img.reshape((img.shape[0],img.shape[1])), cmap='gray')
-    plt.show()
-
-def image_augment(image):
-    '''
-    Performs some transformations on the image
-    '''
-    image = tf.image.random_flip_left_right(image)
-    #image = tf.image.random_brightness(image, max_delta=63)
-    image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
-    return image
-
-def augment_data(X):
-    '''
-    Does data augmentation on input images X.
-    '''
-    X_out = tf.map_fn(image_augment, X)
-    crop_boxes = np.zeros((X.shape[0], 4))
-    for box in crop_boxes:
-        # [y1, x1, y2, x2]
-        box[0] = random.uniform(0,0.12,)
-        box[1] = random.uniform(0,0.12)
-        box[2] = random.uniform(0.88,1)
-        box[3] = random.uniform(0.88,1)
-    X_out = tf.image.crop_and_resize(X_out,
-                                     boxes=crop_boxes,
-                                     box_ind=np.arange(X.shape[0]),
-                                     crop_size=[X.shape[1], X.shape[2]])
-    return X_out
-
-def preprocess_images(X_train, X_test):
-    '''
-    Does standard normalization on train and test set.
-    '''
-    img_mean, img_std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
-    if AUGMENT:
-        X_n = augment_data(X_train).eval()
-        if AUGMENT_TYPE == 'concat':
-            X_train = np.concatenate((X_train,X_n), axis=0)
-            y_train = np.concatenate((y_train,y_train), axis=0)
-        else:
-            X_train = X_n
-    X_train = (X_train - img_mean) / img_std
-    X_test = (X_test  - img_mean) / img_std
-    return X_train, X_test
+SHAPE = (24, 32)
+augment = False
+augment_type = 'replace'
 
 def main(_):
     train_mode = FLAGS.train_mode
@@ -102,12 +51,13 @@ def main(_):
     # loss variable
     mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                                 labels=y,
-                                logits=y_out))
+                                logits=y_out), name='mean_loss')
     tf.summary.scalar('mean_loss', mean_loss)
 
     # compute accuracy
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32),
+                              name='accuracy')
     tf.summary.scalar('accuracy', accuracy)
 
     # confusion matrix
@@ -122,7 +72,7 @@ def main(_):
                                             epsilon=0.002).minimize(mean_loss)
 
     # run parameters
-    epochs = 100
+    epochs = 3
     batch_size = 16
 
     # shuffle indices
@@ -135,16 +85,13 @@ def main(_):
     # summary logs
     merged = tf.summary.merge_all()
 
-    # save model
-    saver = tf.train.Saver()
-
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"
             train_writer = tf.summary.FileWriter(log_dir + '/train',
                                       sess.graph)
             test_writer = tf.summary.FileWriter(log_dir + '/test',
                                       sess.graph)
-            splits = 10
+            splits = 100
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
@@ -152,7 +99,7 @@ def main(_):
             for train_indices, test_indices in k_fold.split(Xd):
                 fold += 1
 
-                # training and val splits
+                # training and validation splits
                 X_train, y_train = Xd[train_indices], yd[train_indices]
                 X_test, y_test = Xd[test_indices], yd[test_indices]
                 X_train, X_test = preprocess_images(X_train, X_test)
@@ -187,6 +134,7 @@ def main(_):
                                 y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
                             elif train_mode == 'disturb_uniform':
                                 y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
+
                             train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.5})
 
                         # compute the losses
@@ -212,12 +160,21 @@ def main(_):
                     model_path = os.path.join(output_dir, model_name)
                     if not os.path.exists(model_path):
                         os.mkdir(model_path)
+
+                    # confusion matrix
                     confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
                     np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
-                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)) + '.ckpt')
+                    print 'weights for conv2:',sess.run('conv2_1/weights:0')
+
+                    #save losses
                     out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
                     out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
+
+                    # save model
+                    saver = tf.train.Saver()
+                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)) + '.ckpt')
                     print("Model saved in file: %s" % save_path)
+
                     end_time = time.time()
                     print 'Train time: {:.3f}'.format(end_time-start_time)
 
