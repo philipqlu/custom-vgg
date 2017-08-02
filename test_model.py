@@ -4,14 +4,14 @@ import argparse
 import os
 import sys
 from helpers import *
-from vgg13_model import vgg
+from vgg13_model import build_model
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
 #### Variables ####
 FLAGS = None
-data_file_name = 'ck_data_32_24.csv'
-test_file_name = 'ck_data_32_24.csv'
+data_file_name = 'ck_data_48_48.csv'
+test_file_name = 'jaffe_48_48.csv'
 crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
@@ -22,14 +22,13 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 
 noise = 0.11
-model_path = ''       # where the model is saved
-model_name = '.ckpt'  # ckpt file name
-SHAPE = (24, 32)
+SHAPE = (48,48)
 ####
 
 def main(_):
-    train_mode = FLAGS.train_mode
-    print FLAGS.data_dir
+    train_mode, model_path = FLAGS.train_mode, FLAGS.model_path
+    model_dir = os.path.dirname(model_path)
+    print train_mode, model_path
 
     # Import data and labels
     X_train, y_train = load_data(os.path.join(FLAGS.data_dir, data_file_name),SHAPE)
@@ -48,11 +47,8 @@ def main(_):
     print 'test data dims:', X_test.shape, 'test output dims:', y_test.shape
 
     # create model
-    X = tf.placeholder(tf.float32, [None, X_train.shape[1], X_train.shape[2], 1])
-    y = tf.placeholder(tf.int64, [None, 6])
-
-    # get output
-    y_out, keep_prob = vgg(X)
+    model = build_model(num_classes=6, model_name='Vgg13Big')
+    X, y, y_out, keep_prob = model.input, model.target, model.logits, model.keep_prob
 
     # loss variable
     mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
@@ -74,7 +70,7 @@ def main(_):
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"\
-            saver.restore(sess,os.path.join(model_path,model_name))
+            saver.restore(sess, model_path)
 
             # compute the losses
             train_loss, train_acc = sess.run([mean_loss, accuracy],
@@ -102,5 +98,6 @@ if __name__ == "__main__":
     parser.add_argument('--train_mode', type=str,
                           default='none',
                           help='\'none\', \'disturb\', or \'soft\'')
+    parser.add_argument('--model_path', type=str)
     FLAGS = parser.parse_args()
     tf.app.run(main=main)

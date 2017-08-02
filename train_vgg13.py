@@ -22,18 +22,23 @@ expression_table = {'Anger'    : 0,
                     'Surprise' : 5}
 log_dir = 'tmp/logs'
 noises = [0.1, 0.05, 0.5, 0.01]
-SHAPE = (48, 48)
 augment = False
 augment_type = 'replace'
 
 def main(_):
-    train_mode = FLAGS.train_mode
+    # Create model
+
+    model = build_model(num_classes=6, model_name='Vgg13Small')
+    X, y, y_out, keep_prob = model.input, model.target, model.logits, model.keep_prob
+    image_shape = model.input_height, model.input_width
+
     # Import data and labels
-    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name),shape=SHAPE)
+    Xd, yd = load_data(os.path.join(FLAGS.data_dir, data_file_name),shape=image_shape)
     data_size = Xd.shape[0]
 
     # Crowdsource part
     is_crowd_train = False
+    train_mode = FLAGS.train_mode
     if train_mode == 'disturb' or train_mode == 'soft':
         print 'crowd training enabled:', train_mode
         is_crowd_train = True
@@ -41,9 +46,7 @@ def main(_):
 
     print 'input data dims:', Xd.shape, 'output data dims:', yd.shape
 
-    # Create model
-    model = build_model(num_classes=6, model_name='CustomVGG13')
-    X, y, y_out, keep_prob = model.input, model.target, model.logits, model.keep_prob
+
 
     # loss variable
     mean_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
@@ -70,7 +73,7 @@ def main(_):
                                             epsilon=0.002).minimize(mean_loss)
 
     # run parameters
-    epochs = 1
+    epochs = 100
     batch_size = 16
 
     # shuffle indices
