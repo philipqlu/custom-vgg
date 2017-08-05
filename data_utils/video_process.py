@@ -28,6 +28,8 @@ def process(file_directory):
     subfolders = os.listdir(file_directory)
     print subfolders
     for folder in subfolders:
+        if folder[0] == '.':
+            continue
         temppath = os.path.join(file_directory, folder)
         xml_file, video_file = get_files(os.listdir(temppath))
         if len(xml_file) == 0:
@@ -40,8 +42,8 @@ def process(file_directory):
             vidcap = cv2.VideoCapture(video_file)
             success, image = vidcap.read()
             count = 0
-            while success and count < 2:
-              vidcap.set(cv2.CAP_PROP_POS_MSEC,1500 + 1000*count)
+            while success and count < 5:
+              vidcap.set(cv2.CAP_PROP_POS_MSEC,400 + 400*count)
               success,image = vidcap.read()
               print('Read a new frame: ', success)
               outpath2 = os.path.join(out_path,v_name)
@@ -49,7 +51,9 @@ def process(file_directory):
                   os.mkdir(outpath2)
               tempout = os.path.join(outpath2,v_name+"%.2d.jpg" % count)
               cv2.imwrite(tempout, image)
-              emotion = emotion_xml(xml_file)
+              emotion = emotion_xml(os.path.join(temppath,xml_file))
+              with open(os.path.join(outpath2,'emot.txt'), 'wa+') as f:
+                  f.write(emotion)
               count += 1
 
 if __name__ == '__main__':
