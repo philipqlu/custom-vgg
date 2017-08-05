@@ -10,9 +10,9 @@ from vgg13_model import build_model
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_48_48.csv'
+data_file_name = 'ck_data_48_48_x2.csv'
 test_file_name = 'jaffe_48_48.csv'
-crowd_file_name = 'crowd.csv'
+crowd_file_name = 'crowd_x2.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -21,7 +21,6 @@ expression_table = {'Anger'    : 0,
                     'Sadness'  : 4,
                     'Surprise' : 5}
 log_dir = 'tmp/logs'
-noises = [0.1, 0.05, 0.5, 0.01]
 augment = False
 augment_type = 'replace'
 
@@ -54,11 +53,19 @@ def main(_):
                                 logits=y_out), name='mean_loss')
     tf.summary.scalar('mean_loss1', mean_loss)
 
-    # compute accuracy
+    # compute accuracy, top-1 to top-3
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32),
                               name='accuracy')
     tf.summary.scalar('accuracy1', accuracy)
+
+    correct_prediction_2 = tf.nn.in_top_k(predictions=y_out,
+                                          targets=tf.argmax(y,axis=1), k=2)
+    accuracy_2 = tf.reduce_mean(tf.cast(correct_prediction_2, tf.float32))
+
+    correct_prediction_3 = tf.nn.in_top_k(predictions=y_out,
+                                          targets=tf.argmax(y,axis=1), k=3)
+    accuracy_3 = tf.reduce_mean(tf.cast(correct_prediction_3, tf.float32))
 
     # confusion matrix
     confusion_matrix = tf.confusion_matrix(labels=tf.argmax(y,axis=1),
@@ -66,15 +73,9 @@ def main(_):
                                            num_classes=6,
                                            name='confusion_matrix')
 
-    # required dependencies for batch normalization
-    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-    with tf.control_dependencies(extra_update_ops):
-        train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
-                                            epsilon=0.002).minimize(mean_loss)
-
     # run parameters
     epochs = 100
-    batch_size = 16
+    batch_size = 32
 
     # shuffle indices
     data_indices = np.arange(data_size)
@@ -96,10 +97,9 @@ def main(_):
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
+            noises = [0, 0.08, 0.16, 0.5]
             for train_indices, test_indices in k_fold.split(Xd):
                 fold += 1
-                if fold>1:
-                    break
                 # training and validation splits
                 X_train, y_train = Xd[train_indices], yd[train_indices]
                 X_test, y_test = Xd[test_indices], yd[test_indices]
@@ -112,12 +112,17 @@ def main(_):
 
                 batch_indices = np.arange(len(X_train))
                 for noise_rate in noises:
+                    # required dependencies for batch normalization
+                    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                    with tf.control_dependencies(extra_update_ops):
+                        train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
+                                                            epsilon=0.017).minimize(mean_loss)
                     sess.run(tf.global_variables_initializer())
 
                     print len(X_train), len(X_test)
                     print('Training')
 
-                    losses = {'train':[],'test':[]}
+                    losses = {'train':[],'test':[],'test2':[],'test3':[]}
                     best_epoch, max_val_acc = 0, 0
 
                     start_time = time.time()
@@ -141,7 +146,7 @@ def main(_):
                         # compute the losses
                         train_loss, train_acc, train_summary = sess.run([mean_loss, accuracy, merged],
                                     feed_dict={X:X_train, y:y_train, keep_prob:1.0})
-                        test_loss, test_acc, test_summary = sess.run([mean_loss, accuracy, merged],
+                        test_loss, test_acc, test_acc2, test_acc3, test_summary = sess.run([mean_loss, accuracy, accuracy_2, accuracy_3, merged],
                                     feed_dict={X:X_test, y:y_test, keep_prob:1.0})
 
                         train_writer.add_summary(train_summary)
@@ -149,11 +154,13 @@ def main(_):
 
                         losses['train'].append(1-train_acc)
                         losses['test'].append(1-test_acc)
+                        losses['test2'].append(1-test_acc2)
+                        losses['test3'].append(1-test_acc3)
                         if max_val_acc < test_acc:
                             max_val_acc = test_acc
                             best_epoch = e
-                        print "Fold {5} Epoch {0}, Train loss = {1:.5g}, Train acc = {2:.5f}, Test loss = {3: .5g}, Test Acc = {4:.5f}" \
-                              .format(e, train_loss, train_acc, test_loss, test_acc, fold)
+                        print "Fold {7} Epoch {0}, Tr loss = {1:.5g}, Tr acc = {2:.5f}, Te loss = {3: .5g}, Te Acc = {4:.5f}, Te-2 Acc = {5:.5f}, Te-3 Acc = {6:.5f}" \
+                              .format(e, train_loss, train_acc, test_loss, test_acc, test_acc2, test_acc3, fold)
                     print "Fold {0} Summary: Best Epoch: {1} with Error {2:.5g}".format(fold, best_epoch, max_val_acc)
 
                     # Save our important summaries
@@ -165,19 +172,17 @@ def main(_):
                     # confusion matrix
                     confusion_results = sess.run(confusion_matrix, feed_dict={X:X_test, y:y_test, keep_prob:1.0})
                     np.savetxt(os.path.join(model_path,'confusion'+str(fold)), confusion_results, fmt='%d', delimiter=',')
-
                     #save losses
-                    out_df = pd.DataFrame({'train':losses['train'],'val':losses['test']})
+                    out_df = pd.DataFrame({'train':losses['train'],'val':losses['test'],'val2':losses['test2'],'val3':losses['test3']})
                     out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
 
                     # save model
-                    saver = tf.train.Saver()
-                    save_path = saver.save(sess, os.path.join(model_path,str(max_val_acc)+'fold'+str(fold)))
-                    print("Model saved in file: %s" % save_path)
+                    # saver = tf.train.Saver()
+                    # save_path = saver.save(sess, os.path.join(model_path,str(test_acc)+'fold'+str(fold)))
+                    print("Model saved in: %s" % model_path)
 
                     end_time = time.time()
                     print 'Train time: {:.3f}'.format(end_time-start_time)
-                    break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
