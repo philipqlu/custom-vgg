@@ -11,7 +11,7 @@ tf.logging.set_verbosity(tf.logging.INFO)
 #### Variables ####
 FLAGS = None
 data_file_name = 'ck_data_48_48.csv'
-test_file_name = 'jaffe_48_48.csv'
+test_file_name = 'mmi_48_48.csv'
 crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
@@ -21,7 +21,7 @@ expression_table = {'Anger'    : 0,
                     'Sadness'  : 4,
                     'Surprise' : 5}
 
-noise = 0.11
+noise = 0.5
 SHAPE = (48,48)
 ####
 
@@ -47,7 +47,7 @@ def main(_):
     print 'test data dims:', X_test.shape, 'test output dims:', y_test.shape
 
     # create model
-    model = build_model(num_classes=6, model_name='Vgg13Big')
+    model = build_model(num_classes=6, model_name='Vgg13Small')
     X, y, y_out, keep_prob = model.input, model.target, model.logits, model.keep_prob
 
     # loss variable
@@ -59,6 +59,14 @@ def main(_):
     correct_prediction = tf.equal(tf.argmax(y_out, axis=1),tf.argmax(y,axis=1))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
+    correct_prediction_2 = tf.nn.in_top_k(predictions=y_out,
+                                          targets=tf.argmax(y,axis=1), k=2)
+    accuracy_2 = tf.reduce_mean(tf.cast(correct_prediction_2, tf.float32))
+
+    correct_prediction_3 = tf.nn.in_top_k(predictions=y_out,
+                                          targets=tf.argmax(y,axis=1), k=3)
+    accuracy_3 = tf.reduce_mean(tf.cast(correct_prediction_3, tf.float32))
+
     # confusion matrix
     confusion_matrix = tf.confusion_matrix(labels=tf.argmax(y,axis=1),
                                         predictions=tf.argmax(y_out,axis=1),
@@ -66,7 +74,7 @@ def main(_):
     # restore model
     saver = tf.train.Saver()
 
-    losses = {'train':0, 'test':0}
+    losses = {'train':[],'test':[],'test2':[],'test3':[]}
 
     with tf.Session() as sess:
         with tf.device("/cpu:0"):  # "/cpu:0" or "/gpu:0"\
@@ -75,16 +83,21 @@ def main(_):
             # compute the losses
             train_loss, train_acc = sess.run([mean_loss, accuracy],
                         feed_dict={X:X_train, y:y_train, keep_prob:1.0})
-            test_loss, test_acc = sess.run([mean_loss, accuracy],
+            test_loss, test_acc, test_acc2, test_acc3 = sess.run([mean_loss, accuracy, accuracy_2, accuracy_3],
                         feed_dict={X:X_test, y:y_test, keep_prob:1.0})
 
-            losses['train'] = (train_acc)
-            losses['test'] = (test_acc)
+            losses['train'].append(train_acc)
+            losses['test'].append(test_acc)
+            losses['test2'].append(test_acc2)
+            losses['test3'].append(test_acc3)
             print losses
+
+            df = pd.DataFrame(losses)
+            df.to_csv(os.path.join(model_dir,'acc'+test_file_name[:3]), index=False)
 
             confusion_results = sess.run(confusion_matrix,
                                 feed_dict={X:X_test, y:y_test, keep_prob:1.0})
-            np.savetxt(fname=os.path.join(model_path,'test_confusion'),
+            np.savetxt(fname=os.path.join(model_dir,'confusion'+test_file_name[:3]),
                        X=confusion_results,
                        fmt='%d',
                        delimiter=',')

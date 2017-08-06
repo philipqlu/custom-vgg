@@ -3,7 +3,7 @@ import os
 import argparse
 
 
-def combine(dir='.', file_list, model_name):
+def combine(dir, file_list, model_name):
     df = pd.DataFrame({'train':[],'val':[]})
     iter = 0
     print file_list

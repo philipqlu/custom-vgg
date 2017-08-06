@@ -10,9 +10,9 @@ from vgg13_model import build_model
 tf.logging.set_verbosity(tf.logging.INFO)
 
 FLAGS = None
-data_file_name = 'ck_data_48_48_x2.csv'
+data_file_name = 'ck_data_48_48.csv'
 test_file_name = 'jaffe_48_48.csv'
-crowd_file_name = 'crowd_x2.csv'
+crowd_file_name = 'crowd.csv'
 output_dir = 'tmp/models'
 expression_table = {'Anger'    : 0,
                     'Disgust'  : 1,
@@ -73,6 +73,12 @@ def main(_):
                                            num_classes=6,
                                            name='confusion_matrix')
 
+    # required dependencies for batch normalization
+    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    with tf.control_dependencies(extra_update_ops):
+        train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
+                                            epsilon=0.017).minimize(mean_loss)
+
     # run parameters
     epochs = 100
     batch_size = 32
@@ -97,7 +103,7 @@ def main(_):
             print 'splits:', splits
             k_fold = KFold(n_splits=splits)
             fold = 0
-            noises = [0, 0.08, 0.16, 0.5]
+            noises = [0.1, 0.2]
             for train_indices, test_indices in k_fold.split(Xd):
                 fold += 1
                 # training and validation splits
@@ -107,16 +113,10 @@ def main(_):
 
                 if is_crowd_train:
                     yc_train = yc[train_indices]
-                    if train_mode=='soft':
-                        y_train = process_target(y_train, yc_train, noise_rate, 'soft')
 
                 batch_indices = np.arange(len(X_train))
                 for noise_rate in noises:
-                    # required dependencies for batch normalization
-                    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-                    with tf.control_dependencies(extra_update_ops):
-                        train_step = tf.train.AdamOptimizer(learning_rate=1e-4,
-                                                            epsilon=0.017).minimize(mean_loss)
+
                     sess.run(tf.global_variables_initializer())
 
                     print len(X_train), len(X_test)
@@ -140,6 +140,8 @@ def main(_):
                                 y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
                             elif train_mode == 'disturb_uniform':
                                 y_mini = process_target(y_mini, y_mini, noise_rate, train_mode)
+                            elif train_mode == 'soft':
+                                y_mini = process_target(y_mini, yc_train[indices], noise_rate, train_mode)
 
                             train_step.run(feed_dict={X: X_mini, y: y_mini, keep_prob:0.5})
 
@@ -177,8 +179,8 @@ def main(_):
                     out_df.to_csv(os.path.join(model_path, 'fold'+str(fold)),index=False)
 
                     # save model
-                    # saver = tf.train.Saver()
-                    # save_path = saver.save(sess, os.path.join(model_path,str(test_acc)+'fold'+str(fold)))
+                    saver = tf.train.Saver()
+                    save_path = saver.save(sess, os.path.join(model_path,str(test_acc)+'fold'+str(fold)))
                     print("Model saved in: %s" % model_path)
 
                     end_time = time.time()

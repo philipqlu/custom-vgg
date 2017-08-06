@@ -114,7 +114,7 @@ def process_target(y, y_c, alpha=0.1, mode='disturb'):
     elif mode == 'disturb_uniform':
         for i in range(len(y)):
             y_n[i] += alpha/classes
-            y_n[i][corr_labels[i]] += 1 - alpha
-            new_targ_idx = int(np.random.choice(a=classes, p=y))
+            y_n[i][corr_labels[i]] -= alpha
+            new_targ_idx = int(np.random.choice(a=classes, p=y_n[i]))
             y_n[i] = one_hot(new_targ_idx,classes)
     return y_n
